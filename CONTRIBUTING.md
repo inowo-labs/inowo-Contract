@@ -1,10 +1,10 @@
-# Contributing to NovaEvents
+# Contributing to Inowo
 
 Thanks for considering a contribution. This guide covers everything you need to go from zero to a merged PR.
 
 ## What this project is
 
-NovaEvents is a Soroban smart contract (Rust) for transparent event management on Stellar. Every financial action — sponsor contributions, ticket sales, and worker payouts — settles on-chain through a single contract that serves as the public ledger for an event.
+Inowo is a Soroban smart contract (Rust) for transparent event management on Stellar. Every financial action — sponsor contributions, ticket sales, and worker payouts — settles on-chain through a single contract that serves as the public ledger for an event.
 
 If you haven't read the README, do that first. It explains the roles, the transparency thesis, and the overall architecture.
 
@@ -73,13 +73,13 @@ cargo test -- --nocapture
 cargo build --target wasm32v1-none --release
 ```
 
-The compiled contract ends up at `target/wasm32v1-none/release/nova_events.wasm`.
+The compiled contract ends up at `target/wasm32v1-none/release/inowo_contract.wasm`.
 
 ### Deploy to testnet (optional, for manual verification)
 
 ```bash
 stellar contract deploy \
-  --wasm target/wasm32v1-none/release/nova_events.wasm \
+  --wasm target/wasm32v1-none/release/inowo_contract.wasm \
   --network testnet \
   --source <your-account>
 ```

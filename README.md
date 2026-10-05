@@ -1,10 +1,10 @@
-# NovaEvents
+# Inowo
 
 > A Soroban smart contract platform for transparent event management on Stellar — featuring sponsorship funding, multi-tier ticketing, and automated payouts, all settled and verifiable on-chain.
 
 ## Overview
 
-NovaEvents brings end-to-end transparency to event management. Every financial action — sponsor contributions, ticket sales, and post-event payouts — happens on-chain, so all stakeholders can see exactly how money flows through an event.
+Inowo brings end-to-end transparency to event management. Every financial action — sponsor contributions, ticket sales, and post-event payouts — happens on-chain, so all stakeholders can see exactly how money flows through an event.
 
 The core idea: events lose trust when funding and spending happen behind closed doors. Here, sponsors can see what every other sponsor contributed, attendees know their tickets are genuinely owned and verifiable, and everyone can trace how the collected funds were ultimately spent. There are no hidden ledgers — the contract *is* the ledger.
 
@@ -16,7 +16,7 @@ The platform supports:
 - **Workers** receive payouts directly through the platform once the event concludes
 - **Everyone** benefits from transparent, trustless settlement — funds move on-chain and are auditable by anyone
 
-NovaEvents is a Stellar-native rewrite of a prior version originally built and deployed on Lisk Sepolia (Solidity/Foundry). The concept, architecture, and role model are proven; this version reimplements them on Soroban to bring the platform to the Stellar ecosystem.
+Inowo is a Stellar-native rewrite of a prior version originally built and deployed on Lisk Sepolia (Solidity/Foundry). The concept, architecture, and role model are proven; this version reimplements them on Soroban to bring the platform to the Stellar ecosystem.
 
 ## Why this matters
 
@@ -105,7 +105,7 @@ rustup target add wasm32v1-none
 cargo build --target wasm32v1-none --release
 ```
 
-The compiled WASM lands at `target/wasm32v1-none/release/nova_events.wasm`.
+The compiled WASM lands at `target/wasm32v1-none/release/inowo_contract.wasm`.
 
 ### Test
 
@@ -117,7 +117,7 @@ cargo test
 
 ```bash
 stellar contract deploy \
-  --wasm target/wasm32v1-none/release/nova_events.wasm \
+  --wasm target/wasm32v1-none/release/inowo_contract.wasm \
   --network testnet \
   --source <your-key-name>
 ```

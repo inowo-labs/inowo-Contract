@@ -7,14 +7,14 @@ use soroban_sdk::{
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-fn setup(env: &Env) -> (Address, StellarAssetClient, Address, NovaEventsContractClient) {
+fn setup(env: &Env) -> (Address, StellarAssetClient, Address, InowoContractClient) {
     let token_admin = Address::generate(env);
     let token_contract = env.register_stellar_asset_contract_v2(token_admin.clone());
     let token_addr = token_contract.address();
     let token_admin_client = StellarAssetClient::new(env, &token_addr);
 
-    let contract_id = env.register(NovaEventsContract, ());
-    let client = NovaEventsContractClient::new(env, &contract_id);
+    let contract_id = env.register(InowoContract, ());
+    let client = InowoContractClient::new(env, &contract_id);
     client.initialize(&token_addr);
 
     (token_addr, token_admin_client, contract_id, client)
@@ -38,7 +38,7 @@ fn default_tiers(env: &Env) -> Vec<TierInput> {
 
 fn create_test_event(
     env: &Env,
-    client: &NovaEventsContractClient,
+    client: &InowoContractClient,
     organizer: &Address,
 ) -> u32 {
     client.create_event(

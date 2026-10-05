@@ -1,5 +1,5 @@
 [package]
-name = "nova-events"
+name = "inowo-contract"
 version = "0.1.0"
 edition = "2021"
 publish = false
