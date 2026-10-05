@@ -86,10 +86,10 @@ pub enum DataKey {
 // ─── Contract ─────────────────────────────────────────────────────────────────
 
 #[contract]
-pub struct NovaEventsContract;
+pub struct InowoContract;
 
 #[contractimpl]
-impl NovaEventsContract {
+impl InowoContract {
     /// One-time setup: record the USDC token contract address.
     pub fn initialize(env: Env, token: Address) {
         if env.storage().instance().has(&DataKey::Token) {
