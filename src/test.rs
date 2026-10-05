@@ -7,7 +7,14 @@ use soroban_sdk::{
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-fn setup(env: &Env) -> (Address, StellarAssetClient, Address, InowoContractClient) {
+fn setup(
+    env: &Env,
+) -> (
+    Address,
+    StellarAssetClient<'_>,
+    Address,
+    InowoContractClient<'_>,
+) {
     let token_admin = Address::generate(env);
     let token_contract = env.register_stellar_asset_contract_v2(token_admin.clone());
     let token_addr = token_contract.address();
@@ -36,11 +43,7 @@ fn default_tiers(env: &Env) -> Vec<TierInput> {
     ]
 }
 
-fn create_test_event(
-    env: &Env,
-    client: &InowoContractClient,
-    organizer: &Address,
-) -> u32 {
+fn create_test_event(env: &Env, client: &InowoContractClient, organizer: &Address) -> u32 {
     client.create_event(
         organizer,
         &String::from_str(env, "Stellar Summit"),
@@ -429,7 +432,7 @@ fn test_get_balance_reflects_ticket_and_sponsor_payments() {
     let buyer = Address::generate(&env);
     let sponsor = Address::generate(&env);
 
-    token_admin.mint(&buyer, &100_000_000_i128);   // 10 USDC
+    token_admin.mint(&buyer, &100_000_000_i128); // 10 USDC
     token_admin.mint(&sponsor, &500_000_000_i128); // 50 USDC
 
     let event_id = create_test_event(&env, &client, &organizer);
