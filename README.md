@@ -1,89 +1,95 @@
 # Inowo
 
-> A Soroban smart contract platform for transparent event management on Stellar — featuring sponsorship funding, multi-tier ticketing, and automated payouts, all settled and verifiable on-chain.
+> Sponsorship escrow and accountable event budgets on Stellar.
 
-## Overview
+Inowo is a Soroban smart contract that holds event funding in escrow and releases it by rules everyone can see. Sponsors know where their money is going before they pay. Workers and vendors are paid on time. If an event falls through, everyone is refunded.
 
-Inowo brings end-to-end transparency to event management. Every financial action — sponsor contributions, ticket sales, and post-event payouts — happens on-chain, so all stakeholders can see exactly how money flows through an event.
+## The problem
 
-The core idea: events lose trust when funding and spending happen behind closed doors. Here, sponsors can see what every other sponsor contributed, attendees know their tickets are genuinely owned and verifiable, and everyone can trace how the collected funds were ultimately spent. There are no hidden ledgers — the contract *is* the ledger.
+Most community events — meetups, hackathons, campus and church events — run on sponsorship. Today that money moves through private bank transfers:
 
-The platform supports:
+- **Sponsors pay blind.** They rarely see the budget, what other sponsors gave, or how the money was spent.
+- **Workers and vendors chase payment.** Staff, caterers, and sound crews are often paid late, partially, or not at all.
+- **Cancelled events strand money.** Getting a refund depends on the organizer's goodwill.
+- **Good organizers can't prove it.** An organizer who has run ten events honestly has no record to show the next sponsor.
 
-- **Event organizers** create and manage events with funding goals and multiple ticket tiers
-- **Sponsors** contribute to event funding with full visibility into every other sponsor's contribution
-- **Attendees** purchase tickets across price tiers, with on-chain proof of ownership
-- **Workers** receive payouts directly through the platform once the event concludes
-- **Everyone** benefits from transparent, trustless settlement — funds move on-chain and are auditable by anyone
+## How Inowo works
 
-Inowo is a Stellar-native rewrite of a prior version originally built and deployed on Lisk Sepolia (Solidity/Foundry). The concept, architecture, and role model are proven; this version reimplements them on Soroban to bring the platform to the Stellar ecosystem.
+1. **Create** — An organizer creates an event with a funding goal and one or more ticket tiers.
+2. **Fund** — Sponsors contribute USDC. Every contribution is recorded on-chain against the sponsor's address. Ticket sales flow into the same escrow.
+3. **Hold** — Funds sit in the contract, not in the organizer's wallet.
+4. **Release** — After the event, funds are paid out to named recipients through the contract, so every payout sits on the same ledger as every contribution. *(planned)*
+5. **Refund** — If the event is cancelled, sponsors and ticket holders are refunded by the contract. *(planned)*
 
-## Why this matters
+Over time, every event an organizer completes becomes a public track record: funds raised, funds released, refunds paid. That record is the organizer's reason to use Inowo — it's what earns sponsor trust for the next event.
 
-Event funding today is opaque. Sponsors hand over money and rarely see how it's used or what others gave. Attendees buy tickets they can't independently verify. Workers chase payments after the event.
+## Why Stellar
 
-By moving the entire money flow on-chain, this platform turns an event into a transparent, auditable process:
+- **USDC is native.** Sponsorships, tickets, and payouts settle in a stable currency, not a volatile token.
+- **Fees are fractions of a cent.** Paying ten workers small amounts is practical.
+- **Anchors connect to local money.** Workers and vendors can cash out to local currency through Stellar anchors, and sponsors can fund from a bank account.
+- **Soroban** gives us auditable, deterministic contract logic for escrow and release rules.
 
-- Sponsors contribute publicly and can see the full sponsorship picture in real time.
-- Ticket sales settle on-chain, so revenue is visible, not self-reported.
-- Payouts happen through the platform, so spending is traceable to the same ledger that collected the funds.
+## Status
 
-It also opens a door for the wider community: anyone whose work revolves around events — organizers, promoters, vendors, ticketing tools — has a transparent, programmable settlement layer to build on top of.
+Inowo is in early development on Stellar testnet. Here is exactly what exists today and what is open for contribution.
 
-## Architecture
+### Implemented
 
-The platform is built around a Soroban smart contract (Rust) that holds event state and enforces the rules of funding, sales, and payouts. The contract is the single source of truth; clients (CLI, scripts, or a future frontend) read from and write to it through the Stellar network.
+| Feature | Description |
+|---------|-------------|
+| Event creation | Organizer creates an event with a funding goal and multiple ticket tiers (price + supply cap) |
+| Sponsorship | Sponsors contribute USDC; each contribution is recorded publicly |
+| Ticket purchase | Attendees buy tickets in USDC; each ticket is an on-chain ownership record |
+| Check-in | Organizer redeems a ticket at the door; a ticket can only be redeemed once |
+| End event | Organizer closes an event, stopping further sales and sponsorships |
+| Escrow | All USDC is held by the contract, tracked per event |
+| Read access | Anyone can query events, tiers, tickets, sponsorships, and balances |
 
-### Core concepts
+### Planned — open for contribution
 
-- **Event** — created by an organizer; holds metadata, a funding goal, ticket tiers, and the current balance of collected funds.
-- **Ticket tier** — a named price level (e.g. General, VIP) with its own price and supply cap.
-- **Ticket** — an on-chain ownership record tied to a buyer's address and a tier. Used for entry verification and (optionally) transfer.
-- **Sponsorship** — a public contribution to an event's funding, recorded against the sponsor's address so all contributions are visible.
-- **Payout** — a disbursement of collected funds to a recipient (e.g. a worker), recorded on-chain so spending is auditable.
+| Feature | Issue |
+|---------|-------|
+| Release funds to recipients after an event ends | [#2](https://github.com/inowo-labs/inowo-Contract/issues/2) |
+| Cancel an event with automatic refunds | [#1](https://github.com/inowo-labs/inowo-Contract/issues/1) |
+| Ticket transfer between holders | [#3](https://github.com/inowo-labs/inowo-Contract/issues/3) |
+| TypeScript bindings for the contract | [#4](https://github.com/inowo-labs/inowo-Contract/issues/4) |
+| Funding deadline — refund sponsors if the goal is not met | — |
+| Budget lines — organizer publishes planned spending per recipient before funding opens | — |
+| Proof of spend — attach a receipt hash to each payout | — |
+| Organizer track record — on-chain history of events delivered and funds released | — |
+| Contract events for indexers | — |
 
-### Roles
+## Project structure
 
-| Role | Can do |
-|------|--------|
-| Organizer | Create events, define tiers, check in tickets, trigger payouts |
-| Sponsor | Contribute funds to an event; view all sponsorships |
-| Attendee | Buy tickets; hold and verify ownership; (optionally) transfer |
-| Worker | Receive payouts |
-| Anyone | Read event state, sponsorships, sales, and payouts |
+Inowo is three repositories:
 
-## Project scope
+| Repository | Description |
+|------------|-------------|
+| [inowo-Contract](https://github.com/inowo-labs/inowo-Contract) | Soroban smart contract (Rust) — the source of truth for all funds and records |
+| [inowo-api](https://github.com/inowo-labs/inowo-api) | Read API (Node.js, Express) that queries the contract for clients |
+| [inowo-app](https://github.com/inowo-labs/inowo-app) | Web frontend (Next.js) for organizers, sponsors, and attendees |
 
-This repository is built and contributed to in stages. The **core** is implemented first and deployed to Stellar testnet; the remaining features are tracked as open issues for contributors.
+All writes — creating events, sponsoring, buying tickets — are signed by the user's wallet and go directly to the contract. The API is read-only.
 
-### Core (implemented + deployed to testnet)
+## Roles
 
-- Event creation with funding goal and one or more ticket tiers
-- Ticket purchase in USDC, settled on-chain, producing an ownership record
-- Check-in / redeem (organizer marks a ticket as used)
-- Sponsorship contributions in USDC, recorded publicly per sponsor
-- Read access to event state, sponsorships, and ticket records
+| Role | Can do today | Planned |
+|------|--------------|---------|
+| Organizer | Create events, define tiers, check in tickets, end events | Release funds, cancel with refunds, publish budget lines |
+| Sponsor | Contribute USDC; view every sponsorship for an event | Automatic refund if the event is cancelled or the goal is missed |
+| Attendee | Buy tickets; prove ownership on-chain | Transfer tickets; refund on cancellation |
+| Recipient | — | Receive payouts from the event escrow |
+| Anyone | Read all events, tickets, sponsorships, and balances | Read payout history and organizer track records |
 
-### Planned (open for contribution)
+## Data model
 
-These are intentionally scoped as contributor issues:
+- **Event** — organizer, name, description, venue, date, funding goal, escrowed balance, and status (`Active`, `Ended`, `Cancelled`).
+- **Ticket tier** — a named price level (e.g. General, VIP) with a price and supply cap.
+- **Ticket** — an ownership record linking a buyer's address to an event and tier, with a redeemed flag.
+- **Sponsorship** — a contribution recorded against the sponsor's address.
 
-- Proportional revenue shares for sponsors based on contribution size
-- Automated payroll distribution to workers after an event concludes
-- Ticket transfer and resale rules (price caps, organizer royalties)
-- QR-code-based check-in flow
-- A web frontend (organizer dashboard, sponsor view, attendee ticket wallet)
-- Event lifecycle controls (cancel event, refund logic)
-- TypeScript bindings / SDK for the contract
-
-If you're a contributor looking for where to start, check the **Issues** tab — each issue is scoped with clear acceptance criteria.
-
-## Tech stack
-
-- **Smart contracts:** Rust + [Soroban](https://soroban.stellar.org/)
-- **Network:** Stellar (testnet for development)
-- **Tooling:** Stellar CLI, `soroban-sdk`
-- **Settlement token:** USDC on Stellar
+All amounts are in USDC stroops: `1 USDC = 10_000_000`.
 
 ## Getting started
 
@@ -92,8 +98,6 @@ If you're a contributor looking for where to start, check the **Issues** tab —
 - [Rust](https://www.rust-lang.org/tools/install) with the `wasm32v1-none` target
 - [Stellar CLI](https://developers.stellar.org/docs/build/smart-contracts/getting-started/setup) v26+
 - A funded Stellar testnet account (`stellar keys generate --network testnet <name>`)
-
-### Install the WASM target
 
 ```bash
 rustup target add wasm32v1-none
@@ -105,7 +109,7 @@ rustup target add wasm32v1-none
 cargo build --target wasm32v1-none --release
 ```
 
-The compiled WASM lands at `target/wasm32v1-none/release/inowo_contract.wasm`.
+The compiled contract is at `target/wasm32v1-none/release/inowo_contract.wasm`.
 
 ### Test
 
@@ -122,38 +126,46 @@ stellar contract deploy \
   --source <your-key-name>
 ```
 
-**Testnet contract ID:** `CABTSQOXHOOAFFWBPDIXAPAL7KKV76WFL3WLGBUH6SLJ7R2BO5YNWKFU`
+### Testnet deployment
 
-**Testnet USDC token:** `CAUJTFVKA5WCN4ZPUDBRDAS3DT5HVKNQTLFT32KDAFVGJRTB7VPRVNRT`
+| | Address |
+|---|---|
+| Contract | `CABTSQOXHOOAFFWBPDIXAPAL7KKV76WFL3WLGBUH6SLJ7R2BO5YNWKFU` |
+| USDC token | `CAUJTFVKA5WCN4ZPUDBRDAS3DT5HVKNQTLFT32KDAFVGJRTB7VPRVNRT` |
 
 ## Function reference
 
+### Write functions
+
 | Function | Parameters | Returns | Description |
-|----------|------------|---------|--------------|
+|----------|------------|---------|-------------|
 | `initialize` | `token: Address` | — | One-time setup; records the USDC token contract address |
-| `create_event` | `organizer: Address, name: String, description: String, venue: String, date_unix: u64, funding_goal: i128, tiers: Vec<TierInput>` | `u32` (event ID) | Organizer creates a new event with one or more ticket tiers |
-| `buy_ticket` | `buyer: Address, event_id: u32, tier_index: u32` | `u32` (ticket ID) | Buyer purchases a ticket in a given tier, paying `tier.price` USDC |
-| `redeem_ticket` | `organizer: Address, event_id: u32, ticket_id: u32` | — | Organizer checks in (redeems) a ticket at the door |
-| `sponsor_event` | `sponsor: Address, event_id: u32, amount: i128` | — | Sponsor contributes USDC to an event; recorded publicly against the sponsor's address |
-| `end_event` | `organizer: Address, event_id: u32` | — | Organizer closes an event (status `Active` → `Ended`), blocking further ticket sales and sponsorships |
-| `get_event` | `event_id: u32` | `Event` | Returns the full event record |
-| `get_tiers` | `event_id: u32` | `Vec<TicketTier>` | Returns the ticket tiers for an event, including live sales counts |
-| `get_ticket` | `event_id: u32, ticket_id: u32` | `Ticket` | Returns a single ticket's ownership record |
-| `get_sponsorships` | `event_id: u32` | `Vec<Sponsorship>` | Returns all sponsorship contributions for an event |
-| `event_count` | — | `u32` | Returns the total number of events created |
-| `ticket_count` | `event_id: u32` | `u32` | Returns the number of tickets sold for an event |
-| `get_token` | — | `Address` | Returns the USDC token contract address configured during `initialize` |
-| `get_balance` | `event_id: u32` | `i128` | Returns the current USDC balance held by the contract for an event |
-| `get_organizer` | `event_id: u32` | `Address` | Returns the organizer address for an event |
-| `sponsor_count` | `event_id: u32` | `u32` | Returns the total number of sponsorship contributions for an event |
-| `tier_count` | `event_id: u32` | `u32` | Returns the number of ticket tiers for an event |
+| `create_event` | `organizer: Address, name: String, description: String, venue: String, date_unix: u64, funding_goal: i128, tiers: Vec<TierInput>` | `u32` (event ID) | Creates an event with one or more ticket tiers |
+| `sponsor_event` | `sponsor: Address, event_id: u32, amount: i128` | — | Contributes USDC to an event's escrow |
+| `buy_ticket` | `buyer: Address, event_id: u32, tier_index: u32` | `u32` (ticket ID) | Buys a ticket, paying the tier price in USDC |
+| `redeem_ticket` | `organizer: Address, event_id: u32, ticket_id: u32` | — | Checks in a ticket at the door |
+| `end_event` | `organizer: Address, event_id: u32` | — | Closes an event (`Active` → `Ended`); blocks further sales and sponsorships |
+
+### Read functions
+
+| Function | Parameters | Returns | Description |
+|----------|------------|---------|-------------|
+| `get_event` | `event_id: u32` | `Event` | Full event record |
+| `get_tiers` | `event_id: u32` | `Vec<TicketTier>` | Ticket tiers with live sales counts |
+| `get_ticket` | `event_id: u32, ticket_id: u32` | `Ticket` | A single ticket's ownership record |
+| `get_sponsorships` | `event_id: u32` | `Vec<Sponsorship>` | All sponsorships for an event |
+| `get_balance` | `event_id: u32` | `i128` | USDC held in escrow for an event |
+| `get_organizer` | `event_id: u32` | `Address` | The event's organizer |
+| `get_token` | — | `Address` | The configured USDC token address |
+| `event_count` | — | `u32` | Total events created |
+| `ticket_count` | `event_id: u32` | `u32` | Tickets sold for an event |
+| `sponsor_count` | `event_id: u32` | `u32` | Sponsorship contributions for an event |
+| `tier_count` | `event_id: u32` | `u32` | Ticket tiers for an event |
 
 ## Contributing
 
-Contributions are welcome. This project is open to developers, designers, and product builders who want to help bring transparent event infrastructure to Stellar.
-
-Please read [CONTRIBUTING.md](./CONTRIBUTING.md) before opening a pull request, and browse the open issues for scoped tasks. Each issue describes what "done" looks like, so you know exactly what to build before you start.
+Inowo is open to developers, designers, and product builders. Read [CONTRIBUTING.md](./CONTRIBUTING.md), then pick an issue from the **Planned** table above or the [Issues](https://github.com/inowo-labs/inowo-Contract/issues) tab. Each issue describes what "done" looks like.
 
 ## License
 
-MIT
+[MIT](./LICENSE)

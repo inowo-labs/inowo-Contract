@@ -105,7 +105,7 @@ stellar contract deploy \
 You may use AI tools to help write or understand code. However:
 
 - You are responsible for every line you submit. Review and understand all AI-generated code before including it in a PR.
-- Submitting unreviewed AI output — code you can't explain or defend — is grounds for a flag under the GrantFox quality policy.
+- Submitting unreviewed AI output — code you can't explain or defend — is grounds for closing the PR.
 - If a reviewer asks you to explain a section of your PR, you should be able to do so.
 
 ## Amounts and precision
