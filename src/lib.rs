@@ -1,9 +1,7 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype,
-    token::Client as TokenClient,
-    Address, Env, String, Vec,
+    contract, contractimpl, contracttype, token::Client as TokenClient, Address, Env, String, Vec,
 };
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -101,6 +99,7 @@ impl InowoContract {
 
     /// Organizer creates a new event with one or more ticket tiers.
     /// Returns the new event ID.
+    #[allow(clippy::too_many_arguments)]
     pub fn create_event(
         env: Env,
         organizer: Address,
@@ -210,7 +209,7 @@ impl InowoContract {
         let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
         TokenClient::new(&env, &token_addr).transfer(
             &buyer,
-            &env.current_contract_address(),
+            env.current_contract_address(),
             &price,
         );
 
@@ -308,7 +307,7 @@ impl InowoContract {
         let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
         TokenClient::new(&env, &token_addr).transfer(
             &sponsor,
-            &env.current_contract_address(),
+            env.current_contract_address(),
             &amount,
         );
 
