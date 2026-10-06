@@ -49,7 +49,7 @@ cargo build
 cargo test
 ```
 
-All 31 tests must pass before you open a PR. New functions require new tests.
+All tests must pass before you open a PR. New functions require new tests, and failure tests should assert the exact `Error` variant, not just `is_err()`.
 
 If you're working on a single function, you don't need to run the full suite every time:
 
@@ -97,7 +97,7 @@ stellar contract deploy \
 - This is a `no_std` Soroban contract. Don't introduce `std`-only dependencies.
 - Storage: use `persistent` for per-event data, `instance` for contract-wide config.
 - Auth: any function that changes state on behalf of a user must call `address.require_auth()` at the top.
-- Error handling: `panic!` with a short descriptive string is fine for contract-level invariant violations.
+- Error handling: return `Err(Error::...)` from the `Error` enum in `src/lib.rs` — never `panic!`. Panic messages are stripped from release builds, so clients only ever see the numeric error code. Add new variants at the end with the next number, and never renumber or reuse an existing code.
 - Comments: only add a comment when the *why* is non-obvious. Don't describe what the code does — the code does that.
 
 ## AI-assisted contributions
