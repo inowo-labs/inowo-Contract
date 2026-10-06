@@ -162,6 +162,27 @@ stellar contract deploy \
 | `sponsor_count` | `event_id: u32` | `u32` | Sponsorship contributions for an event |
 | `tier_count` | `event_id: u32` | `u32` | Ticket tiers for an event |
 
+### Errors
+
+Every function that can fail returns a typed error. On-chain, clients receive it as `Error(Contract, #<code>)`. Codes are stable and never reused.
+
+| Code | Error | Returned when |
+|------|-------|---------------|
+| 1 | `AlreadyInitialized` | `initialize` is called a second time |
+| 2 | `NotInitialized` | The contract has not been initialized with a token |
+| 3 | `EventNotFound` | No event exists with the given ID |
+| 4 | `TicketNotFound` | No ticket exists with the given ID for the event |
+| 5 | `NotOrganizer` | The caller is not the event's organizer |
+| 6 | `EventNotActive` | The event has ended or been cancelled |
+| 7 | `NoTiers` | `create_event` was called with no ticket tiers |
+| 8 | `InvalidFundingGoal` | The funding goal is zero or negative |
+| 9 | `InvalidTierPrice` | A tier price is zero or negative |
+| 10 | `InvalidSupplyCap` | A tier supply cap is zero |
+| 11 | `InvalidTier` | The tier index is out of range |
+| 12 | `TierSoldOut` | The tier has no tickets left |
+| 13 | `AlreadyRedeemed` | The ticket has already been checked in |
+| 14 | `InvalidAmount` | A sponsorship amount is zero or negative |
+
 ## Contributing
 
 Inowo is open to developers, designers, and product builders. Read [CONTRIBUTING.md](./CONTRIBUTING.md), then pick an issue from the **Planned** table above or the [Issues](https://github.com/inowo-labs/inowo-Contract/issues) tab. Each issue describes what "done" looks like.

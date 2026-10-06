@@ -250,7 +250,7 @@ fn test_sold_out_tier_blocks_purchase() {
     client.buy_ticket(&buyer_a, &event_id, &0);
 
     let result = client.try_buy_ticket(&buyer_b, &event_id, &0);
-    assert!(result.is_err());
+    assert_eq!(result.err(), Some(Ok(Error::TierSoldOut)));
 }
 
 #[test]
@@ -270,7 +270,7 @@ fn test_double_redeem_fails() {
     client.redeem_ticket(&organizer, &event_id, &ticket_id);
 
     let result = client.try_redeem_ticket(&organizer, &event_id, &ticket_id);
-    assert!(result.is_err());
+    assert_eq!(result.err(), Some(Ok(Error::AlreadyRedeemed)));
 }
 
 #[test]
@@ -303,7 +303,7 @@ fn test_buy_ticket_blocked_after_end_event() {
     client.end_event(&organizer, &event_id);
 
     let result = client.try_buy_ticket(&buyer, &event_id, &0);
-    assert!(result.is_err());
+    assert_eq!(result.err(), Some(Ok(Error::EventNotActive)));
 }
 
 #[test]
@@ -318,7 +318,7 @@ fn test_end_event_by_non_organizer_fails() {
     let event_id = create_test_event(&env, &client, &organizer);
 
     let result = client.try_end_event(&impostor, &event_id);
-    assert!(result.is_err());
+    assert_eq!(result.err(), Some(Ok(Error::NotOrganizer)));
 }
 
 #[test]
@@ -333,7 +333,7 @@ fn test_end_already_ended_event_fails() {
     client.end_event(&organizer, &event_id);
 
     let result = client.try_end_event(&organizer, &event_id);
-    assert!(result.is_err());
+    assert_eq!(result.err(), Some(Ok(Error::EventNotActive)));
 }
 
 #[test]
@@ -350,7 +350,7 @@ fn test_sponsor_with_zero_amount_rejected() {
     let event_id = create_test_event(&env, &client, &organizer);
 
     let result = client.try_sponsor_event(&sponsor, &event_id, &0);
-    assert!(result.is_err());
+    assert_eq!(result.err(), Some(Ok(Error::InvalidAmount)));
 }
 
 #[test]
@@ -368,7 +368,7 @@ fn test_sponsor_rejected_on_ended_event() {
     client.end_event(&organizer, &event_id);
 
     let result = client.try_sponsor_event(&sponsor, &event_id, &100_000_000_i128);
-    assert!(result.is_err());
+    assert_eq!(result.err(), Some(Ok(Error::EventNotActive)));
 }
 
 #[test]
@@ -379,7 +379,7 @@ fn test_double_initialize_rejected() {
     let (token_addr, _, _, client) = setup(&env);
 
     let result = client.try_initialize(&token_addr);
-    assert!(result.is_err());
+    assert_eq!(result.err(), Some(Ok(Error::AlreadyInitialized)));
 }
 
 #[test]
@@ -392,7 +392,7 @@ fn test_sponsor_nonexistent_event_fails() {
     token_admin.mint(&sponsor, &500_000_000_i128);
 
     let result = client.try_sponsor_event(&sponsor, &99, &100_000_000_i128);
-    assert!(result.is_err());
+    assert_eq!(result.err(), Some(Ok(Error::EventNotFound)));
 }
 
 #[test]
@@ -411,7 +411,7 @@ fn test_non_organizer_cannot_redeem_ticket() {
     let ticket_id = client.buy_ticket(&buyer, &event_id, &0);
 
     let result = client.try_redeem_ticket(&impostor, &event_id, &ticket_id);
-    assert!(result.is_err());
+    assert_eq!(result.err(), Some(Ok(Error::NotOrganizer)));
 }
 
 #[test]
@@ -460,7 +460,7 @@ fn test_invalid_tier_index_rejected() {
     let event_id = create_test_event(&env, &client, &organizer);
 
     let result = client.try_buy_ticket(&buyer, &event_id, &99);
-    assert!(result.is_err());
+    assert_eq!(result.err(), Some(Ok(Error::InvalidTier)));
 }
 
 #[test]
@@ -480,7 +480,7 @@ fn test_create_event_with_no_tiers_rejected() {
         &Vec::new(&env),
     );
 
-    assert!(result.is_err());
+    assert_eq!(result.err(), Some(Ok(Error::NoTiers)));
 }
 
 #[test]
@@ -500,7 +500,7 @@ fn test_create_event_with_negative_funding_goal_rejected() {
         &default_tiers(&env),
     );
 
-    assert!(result.is_err());
+    assert_eq!(result.err(), Some(Ok(Error::InvalidFundingGoal)));
 }
 
 #[test]
@@ -530,7 +530,7 @@ fn test_zero_price_tier_rejected() {
         &bad_tiers,
     );
 
-    assert!(result.is_err());
+    assert_eq!(result.err(), Some(Ok(Error::InvalidTierPrice)));
 }
 
 #[test]
@@ -560,7 +560,7 @@ fn test_zero_supply_cap_tier_rejected() {
         &bad_tiers,
     );
 
-    assert!(result.is_err());
+    assert_eq!(result.err(), Some(Ok(Error::InvalidSupplyCap)));
 }
 
 #[test]
@@ -584,7 +584,7 @@ fn test_get_organizer_nonexistent_event_fails() {
     let (_, _, _, client) = setup(&env);
 
     let result = client.try_get_organizer(&99);
-    assert!(result.is_err());
+    assert_eq!(result.err(), Some(Ok(Error::EventNotFound)));
 }
 
 #[test]
@@ -677,5 +677,125 @@ fn test_buy_ticket_rejected_on_ended_event() {
     assert_eq!(client.get_event(&event_id).status, EventStatus::Ended);
 
     let result = client.try_buy_ticket(&buyer, &event_id, &0);
-    assert!(result.is_err());
+    assert_eq!(result.err(), Some(Ok(Error::EventNotActive)));
+}
+
+#[test]
+fn test_queries_on_nonexistent_event_return_event_not_found() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, client) = setup(&env);
+    let missing = 99_u32;
+
+    assert_eq!(
+        client.try_get_event(&missing).err(),
+        Some(Ok(Error::EventNotFound))
+    );
+    assert_eq!(
+        client.try_get_tiers(&missing).err(),
+        Some(Ok(Error::EventNotFound))
+    );
+    assert_eq!(
+        client.try_get_ticket(&missing, &0).err(),
+        Some(Ok(Error::EventNotFound))
+    );
+    assert_eq!(
+        client.try_get_sponsorships(&missing).err(),
+        Some(Ok(Error::EventNotFound))
+    );
+    assert_eq!(
+        client.try_ticket_count(&missing).err(),
+        Some(Ok(Error::EventNotFound))
+    );
+    assert_eq!(
+        client.try_sponsor_count(&missing).err(),
+        Some(Ok(Error::EventNotFound))
+    );
+    assert_eq!(
+        client.try_tier_count(&missing).err(),
+        Some(Ok(Error::EventNotFound))
+    );
+    assert_eq!(
+        client.try_get_balance(&missing).err(),
+        Some(Ok(Error::EventNotFound))
+    );
+}
+
+#[test]
+fn test_get_ticket_nonexistent_ticket_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let event_id = create_test_event(&env, &client, &organizer);
+
+    let result = client.try_get_ticket(&event_id, &0);
+    assert_eq!(result.err(), Some(Ok(Error::TicketNotFound)));
+}
+
+#[test]
+fn test_redeem_nonexistent_ticket_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let event_id = create_test_event(&env, &client, &organizer);
+
+    let result = client.try_redeem_ticket(&organizer, &event_id, &0);
+    assert_eq!(result.err(), Some(Ok(Error::TicketNotFound)));
+}
+
+#[test]
+fn test_get_token_before_initialize_fails() {
+    let env = Env::default();
+    let contract_id = env.register(InowoContract, ());
+    let client = InowoContractClient::new(&env, &contract_id);
+
+    assert_eq!(
+        client.try_get_token().err(),
+        Some(Ok(Error::NotInitialized))
+    );
+}
+
+#[test]
+fn test_rejected_purchase_does_not_charge_buyer() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (token_addr, token_admin, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    token_admin.mint(&buyer, &100_000_000_i128);
+
+    let event_id = create_test_event(&env, &client, &organizer);
+    client.end_event(&organizer, &event_id);
+
+    let result = client.try_buy_ticket(&buyer, &event_id, &0);
+    assert_eq!(result.err(), Some(Ok(Error::EventNotActive)));
+    assert_eq!(
+        TokenClient::new(&env, &token_addr).balance(&buyer),
+        100_000_000_i128
+    );
+    assert_eq!(client.get_balance(&event_id), 0);
+}
+
+#[test]
+fn test_error_codes_are_stable() {
+    assert_eq!(Error::AlreadyInitialized as u32, 1);
+    assert_eq!(Error::NotInitialized as u32, 2);
+    assert_eq!(Error::EventNotFound as u32, 3);
+    assert_eq!(Error::TicketNotFound as u32, 4);
+    assert_eq!(Error::NotOrganizer as u32, 5);
+    assert_eq!(Error::EventNotActive as u32, 6);
+    assert_eq!(Error::NoTiers as u32, 7);
+    assert_eq!(Error::InvalidFundingGoal as u32, 8);
+    assert_eq!(Error::InvalidTierPrice as u32, 9);
+    assert_eq!(Error::InvalidSupplyCap as u32, 10);
+    assert_eq!(Error::InvalidTier as u32, 11);
+    assert_eq!(Error::TierSoldOut as u32, 12);
+    assert_eq!(Error::AlreadyRedeemed as u32, 13);
+    assert_eq!(Error::InvalidAmount as u32, 14);
 }
