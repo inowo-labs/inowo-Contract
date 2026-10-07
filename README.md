@@ -123,8 +123,12 @@ cargo test
 stellar contract deploy \
   --wasm target/wasm32v1-none/release/inowo_contract.wasm \
   --network testnet \
-  --source <your-key-name>
+  --source <your-key-name> \
+  -- \
+  --token <usdc-token-contract-id>
 ```
+
+The token address is passed to the contract's constructor, which runs atomically with deployment.
 
 ### Testnet deployment
 
@@ -139,7 +143,7 @@ stellar contract deploy \
 
 | Function | Parameters | Returns | Description |
 |----------|------------|---------|-------------|
-| `initialize` | `token: Address` | — | One-time setup; records the USDC token contract address |
+| `__constructor` | `token: Address` | — | Runs once at deployment; records the USDC token contract address |
 | `create_event` | `organizer: Address, name: String, description: String, venue: String, date_unix: u64, funding_goal: i128, tiers: Vec<TierInput>` | `u32` (event ID) | Creates an event with one or more ticket tiers |
 | `sponsor_event` | `sponsor: Address, event_id: u32, amount: i128` | — | Contributes USDC to an event's escrow |
 | `buy_ticket` | `buyer: Address, event_id: u32, tier_index: u32` | `u32` (ticket ID) | Buys a ticket, paying the tier price in USDC |
@@ -162,14 +166,30 @@ stellar contract deploy \
 | `sponsor_count` | `event_id: u32` | `u32` | Sponsorship contributions for an event |
 | `tier_count` | `event_id: u32` | `u32` | Ticket tiers for an event |
 
+### Events
+
+Every state change publishes a contract event, so indexers can follow an event's full money flow without polling storage. The first topic is the event name; fields marked *topic* follow it, and the rest are in the data map.
+
+| Event | Topics | Data | Published by |
+|-------|--------|------|--------------|
+| `event_created` | `event_id`, `organizer` | `funding_goal`, `date_unix` | `create_event` |
+| `sponsored` | `event_id`, `sponsor` | `amount` | `sponsor_event` |
+| `ticket_purchased` | `event_id`, `buyer` | `ticket_id`, `tier_index`, `price` | `buy_ticket` |
+| `ticket_redeemed` | `event_id` | `ticket_id` | `redeem_ticket` |
+| `event_ended` | `event_id` | `balance` | `end_event` |
+
+### Storage lifetime
+
+Soroban archives storage entries whose TTL runs out. Every write extends the entry it touches, and the contract instance, to 120 days whenever fewer than 30 days remain, so active events stay live.
+
 ### Errors
 
 Every function that can fail returns a typed error. On-chain, clients receive it as `Error(Contract, #<code>)`. Codes are stable and never reused.
 
 | Code | Error | Returned when |
 |------|-------|---------------|
-| 1 | `AlreadyInitialized` | `initialize` is called a second time |
-| 2 | `NotInitialized` | The contract has not been initialized with a token |
+| 1 | `AlreadyInitialized` | Reserved — setup happens in the constructor, which cannot run twice |
+| 2 | `NotInitialized` | No token is configured (cannot occur on a correctly deployed contract) |
 | 3 | `EventNotFound` | No event exists with the given ID |
 | 4 | `TicketNotFound` | No ticket exists with the given ID for the event |
 | 5 | `NotOrganizer` | The caller is not the event's organizer |
