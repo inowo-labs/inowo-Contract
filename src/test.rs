@@ -777,6 +777,10 @@ fn test_error_codes_are_stable() {
     assert_eq!(Error::TierSoldOut as u32, 12);
     assert_eq!(Error::AlreadyRedeemed as u32, 13);
     assert_eq!(Error::InvalidAmount as u32, 14);
+    assert_eq!(Error::EventNotCancelled as u32, 15);
+    assert_eq!(Error::NotTicketOwner as u32, 16);
+    assert_eq!(Error::AlreadyRefunded as u32, 17);
+    assert_eq!(Error::NothingToRefund as u32, 18);
 }
 
 #[test]
@@ -952,4 +956,321 @@ fn test_writes_extend_storage_ttl() {
         }
         assert_eq!(env.storage().instance().get_ttl(), TTL_EXTEND_TO);
     });
+}
+
+// ─── Cancellation and refunds ────────────────────────────────────────────────
+
+#[test]
+fn test_cancel_event_sets_status_and_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, contract_id, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let sponsor = Address::generate(&env);
+    token_admin.mint(&sponsor, &100_000_000_i128);
+    let event_id = create_test_event(&env, &client, &organizer);
+    client.sponsor_event(&sponsor, &event_id, &25_000_000_i128);
+
+    client.cancel_event(&organizer, &event_id);
+    // events().all() only covers the latest invocation, so capture before reading state.
+    let events = env.events().all().filter_by_contract(&contract_id);
+
+    assert_eq!(client.get_event(&event_id).status, EventStatus::Cancelled);
+    assert_eq!(
+        events,
+        [EventCancelled {
+            event_id,
+            balance: 25_000_000,
+        }
+        .to_xdr(&env, &contract_id)]
+    );
+}
+
+#[test]
+fn test_cancel_event_by_non_organizer_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let impostor = Address::generate(&env);
+    let event_id = create_test_event(&env, &client, &organizer);
+
+    let result = client.try_cancel_event(&impostor, &event_id);
+    assert_eq!(result.err(), Some(Ok(Error::NotOrganizer)));
+}
+
+#[test]
+fn test_cancel_ended_event_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let event_id = create_test_event(&env, &client, &organizer);
+    client.end_event(&organizer, &event_id);
+
+    let result = client.try_cancel_event(&organizer, &event_id);
+    assert_eq!(result.err(), Some(Ok(Error::EventNotActive)));
+}
+
+#[test]
+fn test_cancelled_event_blocks_sales_sponsorship_and_check_in() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    token_admin.mint(&buyer, &100_000_000_i128);
+    let event_id = create_test_event(&env, &client, &organizer);
+    let ticket_id = client.buy_ticket(&buyer, &event_id, &0);
+    client.cancel_event(&organizer, &event_id);
+
+    assert_eq!(
+        client.try_buy_ticket(&buyer, &event_id, &0).err(),
+        Some(Ok(Error::EventNotActive))
+    );
+    assert_eq!(
+        client
+            .try_sponsor_event(&buyer, &event_id, &10_000_000_i128)
+            .err(),
+        Some(Ok(Error::EventNotActive))
+    );
+    assert_eq!(
+        client
+            .try_redeem_ticket(&organizer, &event_id, &ticket_id)
+            .err(),
+        Some(Ok(Error::EventNotActive))
+    );
+}
+
+#[test]
+fn test_refund_ticket_returns_price_paid() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (token_addr, token_admin, contract_id, client) = setup(&env);
+    let token = TokenClient::new(&env, &token_addr);
+    let organizer = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    token_admin.mint(&buyer, &100_000_000_i128);
+    let event_id = create_test_event(&env, &client, &organizer);
+    let ticket_id = client.buy_ticket(&buyer, &event_id, &1); // VIP, 5 USDC
+    client.cancel_event(&organizer, &event_id);
+
+    let refunded = client.refund_ticket(&buyer, &event_id, &ticket_id);
+    let events = env.events().all().filter_by_contract(&contract_id);
+
+    assert_eq!(refunded, 50_000_000);
+    assert_eq!(token.balance(&buyer), 100_000_000);
+    assert_eq!(client.get_balance(&event_id), 0);
+    assert!(client.get_ticket(&event_id, &ticket_id).refunded);
+    assert_eq!(
+        events,
+        [TicketRefunded {
+            event_id,
+            owner: buyer,
+            ticket_id,
+            amount: 50_000_000,
+        }
+        .to_xdr(&env, &contract_id)]
+    );
+}
+
+#[test]
+fn test_refund_redeemed_ticket_is_allowed() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    token_admin.mint(&buyer, &100_000_000_i128);
+    let event_id = create_test_event(&env, &client, &organizer);
+    let ticket_id = client.buy_ticket(&buyer, &event_id, &0);
+    client.redeem_ticket(&organizer, &event_id, &ticket_id);
+    client.cancel_event(&organizer, &event_id);
+
+    assert_eq!(
+        client.refund_ticket(&buyer, &event_id, &ticket_id),
+        10_000_000
+    );
+}
+
+#[test]
+fn test_refund_ticket_twice_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    token_admin.mint(&buyer, &100_000_000_i128);
+    let event_id = create_test_event(&env, &client, &organizer);
+    let ticket_id = client.buy_ticket(&buyer, &event_id, &0);
+    client.cancel_event(&organizer, &event_id);
+    client.refund_ticket(&buyer, &event_id, &ticket_id);
+
+    let result = client.try_refund_ticket(&buyer, &event_id, &ticket_id);
+    assert_eq!(result.err(), Some(Ok(Error::AlreadyRefunded)));
+}
+
+#[test]
+fn test_refund_ticket_by_non_owner_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let thief = Address::generate(&env);
+    token_admin.mint(&buyer, &100_000_000_i128);
+    let event_id = create_test_event(&env, &client, &organizer);
+    let ticket_id = client.buy_ticket(&buyer, &event_id, &0);
+    client.cancel_event(&organizer, &event_id);
+
+    let result = client.try_refund_ticket(&thief, &event_id, &ticket_id);
+    assert_eq!(result.err(), Some(Ok(Error::NotTicketOwner)));
+}
+
+#[test]
+fn test_refund_ticket_on_active_or_ended_event_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    token_admin.mint(&buyer, &100_000_000_i128);
+    let event_id = create_test_event(&env, &client, &organizer);
+    let ticket_id = client.buy_ticket(&buyer, &event_id, &0);
+
+    assert_eq!(
+        client
+            .try_refund_ticket(&buyer, &event_id, &ticket_id)
+            .err(),
+        Some(Ok(Error::EventNotCancelled))
+    );
+
+    client.end_event(&organizer, &event_id);
+    assert_eq!(
+        client
+            .try_refund_ticket(&buyer, &event_id, &ticket_id)
+            .err(),
+        Some(Ok(Error::EventNotCancelled))
+    );
+}
+
+#[test]
+fn test_refund_sponsorship_returns_total_of_all_contributions() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (token_addr, token_admin, contract_id, client) = setup(&env);
+    let token = TokenClient::new(&env, &token_addr);
+    let organizer = Address::generate(&env);
+    let sponsor = Address::generate(&env);
+    token_admin.mint(&sponsor, &100_000_000_i128);
+    let event_id = create_test_event(&env, &client, &organizer);
+    client.sponsor_event(&sponsor, &event_id, &30_000_000_i128);
+    client.sponsor_event(&sponsor, &event_id, &20_000_000_i128);
+    assert_eq!(client.get_sponsor_total(&event_id, &sponsor), 50_000_000);
+    client.cancel_event(&organizer, &event_id);
+
+    let refunded = client.refund_sponsorship(&sponsor, &event_id);
+    let events = env.events().all().filter_by_contract(&contract_id);
+
+    assert_eq!(refunded, 50_000_000);
+    assert_eq!(token.balance(&sponsor), 100_000_000);
+    assert_eq!(client.get_sponsor_total(&event_id, &sponsor), 0);
+    assert_eq!(client.get_balance(&event_id), 0);
+    assert_eq!(
+        events,
+        [SponsorshipRefunded {
+            event_id,
+            sponsor,
+            amount: 50_000_000,
+        }
+        .to_xdr(&env, &contract_id)]
+    );
+}
+
+#[test]
+fn test_refund_sponsorship_twice_or_by_non_sponsor_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let sponsor = Address::generate(&env);
+    let stranger = Address::generate(&env);
+    token_admin.mint(&sponsor, &100_000_000_i128);
+    let event_id = create_test_event(&env, &client, &organizer);
+    client.sponsor_event(&sponsor, &event_id, &30_000_000_i128);
+    client.cancel_event(&organizer, &event_id);
+    client.refund_sponsorship(&sponsor, &event_id);
+
+    assert_eq!(
+        client.try_refund_sponsorship(&sponsor, &event_id).err(),
+        Some(Ok(Error::NothingToRefund))
+    );
+    assert_eq!(
+        client.try_refund_sponsorship(&stranger, &event_id).err(),
+        Some(Ok(Error::NothingToRefund))
+    );
+}
+
+#[test]
+fn test_refund_sponsorship_on_active_event_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let sponsor = Address::generate(&env);
+    token_admin.mint(&sponsor, &100_000_000_i128);
+    let event_id = create_test_event(&env, &client, &organizer);
+    client.sponsor_event(&sponsor, &event_id, &30_000_000_i128);
+
+    let result = client.try_refund_sponsorship(&sponsor, &event_id);
+    assert_eq!(result.err(), Some(Ok(Error::EventNotCancelled)));
+}
+
+#[test]
+fn test_all_refunds_return_every_stroop_collected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (token_addr, token_admin, contract_id, client) = setup(&env);
+    let token = TokenClient::new(&env, &token_addr);
+    let organizer = Address::generate(&env);
+    let buyers = [Address::generate(&env), Address::generate(&env)];
+    let sponsors = [Address::generate(&env), Address::generate(&env)];
+    for who in buyers.iter().chain(sponsors.iter()) {
+        token_admin.mint(who, &200_000_000_i128);
+    }
+
+    let event_id = create_test_event(&env, &client, &organizer);
+    let t0 = client.buy_ticket(&buyers[0], &event_id, &0);
+    let t1 = client.buy_ticket(&buyers[1], &event_id, &1);
+    let t2 = client.buy_ticket(&buyers[1], &event_id, &0);
+    client.sponsor_event(&sponsors[0], &event_id, &70_000_000_i128);
+    client.sponsor_event(&sponsors[1], &event_id, &15_000_000_i128);
+    client.sponsor_event(&sponsors[0], &event_id, &5_000_000_i128);
+    assert_eq!(token.balance(&contract_id), 160_000_000);
+
+    client.cancel_event(&organizer, &event_id);
+    client.refund_ticket(&buyers[0], &event_id, &t0);
+    client.refund_ticket(&buyers[1], &event_id, &t1);
+    client.refund_ticket(&buyers[1], &event_id, &t2);
+    client.refund_sponsorship(&sponsors[0], &event_id);
+    client.refund_sponsorship(&sponsors[1], &event_id);
+
+    assert_eq!(client.get_balance(&event_id), 0);
+    assert_eq!(token.balance(&contract_id), 0);
+    for who in buyers.iter().chain(sponsors.iter()) {
+        assert_eq!(token.balance(who), 200_000_000);
+    }
 }

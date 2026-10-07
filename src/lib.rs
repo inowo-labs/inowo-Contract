@@ -59,6 +59,9 @@ pub struct Ticket {
     pub tier_index: u32,
     pub owner: Address,
     pub redeemed: bool,
+    /// USDC stroops paid, returned in full if the event is cancelled.
+    pub price_paid: i128,
+    pub refunded: bool,
 }
 
 /// A public sponsorship contribution record.
@@ -92,6 +95,10 @@ pub enum Error {
     TierSoldOut = 12,
     AlreadyRedeemed = 13,
     InvalidAmount = 14,
+    EventNotCancelled = 15,
+    NotTicketOwner = 16,
+    AlreadyRefunded = 17,
+    NothingToRefund = 18,
 }
 
 // ─── Contract events ──────────────────────────────────────────────────────────
@@ -148,6 +155,35 @@ pub struct EventEnded {
     pub balance: i128,
 }
 
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EventCancelled {
+    #[topic]
+    pub event_id: u32,
+    pub balance: i128,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TicketRefunded {
+    #[topic]
+    pub event_id: u32,
+    #[topic]
+    pub owner: Address,
+    pub ticket_id: u32,
+    pub amount: i128,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SponsorshipRefunded {
+    #[topic]
+    pub event_id: u32,
+    #[topic]
+    pub sponsor: Address,
+    pub amount: i128,
+}
+
 // ─── Storage keys ─────────────────────────────────────────────────────────────
 
 #[contracttype]
@@ -159,6 +195,8 @@ pub enum DataKey {
     TicketCounter(u32),
     Ticket(u32, u32),
     Sponsorships(u32),
+    /// Running total a sponsor has contributed to an event, owed back on cancellation.
+    SponsorTotal(u32, Address),
 }
 
 // ─── Storage helpers ──────────────────────────────────────────────────────────
@@ -216,6 +254,25 @@ fn load_sponsorships(env: &Env, event_id: u32) -> Vec<Sponsorship> {
         .persistent()
         .get(&DataKey::Sponsorships(event_id))
         .unwrap_or_else(|| Vec::new(env))
+}
+
+fn load_sponsor_total(env: &Env, event_id: u32, sponsor: &Address) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::SponsorTotal(event_id, sponsor.clone()))
+        .unwrap_or(0)
+}
+
+fn load_ticket(env: &Env, event_id: u32, ticket_id: u32) -> Result<Ticket, Error> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::Ticket(event_id, ticket_id))
+        .ok_or(Error::TicketNotFound)
+}
+
+fn pay_out(env: &Env, to: &Address, amount: i128) -> Result<(), Error> {
+    TokenClient::new(env, &load_token(env)?).transfer(&env.current_contract_address(), to, &amount);
+    Ok(())
 }
 
 // ─── Contract ─────────────────────────────────────────────────────────────────
@@ -367,6 +424,8 @@ impl InowoContract {
                 tier_index,
                 owner: buyer.clone(),
                 redeemed: false,
+                price_paid: price,
+                refunded: false,
             },
         );
 
@@ -395,12 +454,11 @@ impl InowoContract {
         if event.organizer != organizer {
             return Err(Error::NotOrganizer);
         }
+        if event.status == EventStatus::Cancelled {
+            return Err(Error::EventNotActive);
+        }
 
-        let mut ticket: Ticket = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Ticket(event_id, ticket_id))
-            .ok_or(Error::TicketNotFound)?;
+        let mut ticket = load_ticket(&env, event_id, ticket_id)?;
         if ticket.redeemed {
             return Err(Error::AlreadyRedeemed);
         }
@@ -448,6 +506,13 @@ impl InowoContract {
         });
         save(&env, &DataKey::Sponsorships(event_id), &sponsorships);
 
+        let total = load_sponsor_total(&env, event_id, &sponsor) + amount;
+        save(
+            &env,
+            &DataKey::SponsorTotal(event_id, sponsor.clone()),
+            &total,
+        );
+
         event.balance += amount;
         save(&env, &DataKey::Event(event_id), &event);
 
@@ -484,6 +549,106 @@ impl InowoContract {
         Ok(())
     }
 
+    /// Organizer cancels an active event (Active → Cancelled). Sales and
+    /// sponsorships stop, and every ticket holder and sponsor can claim a
+    /// full refund. Funds can only be released after an event *ends*, so a
+    /// cancelled event always still holds everything it collected.
+    pub fn cancel_event(env: Env, organizer: Address, event_id: u32) -> Result<(), Error> {
+        organizer.require_auth();
+
+        let mut event = load_event(&env, event_id)?;
+        if event.organizer != organizer {
+            return Err(Error::NotOrganizer);
+        }
+        if event.status != EventStatus::Active {
+            return Err(Error::EventNotActive);
+        }
+
+        event.status = EventStatus::Cancelled;
+        save(&env, &DataKey::Event(event_id), &event);
+
+        EventCancelled {
+            event_id,
+            balance: event.balance,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Ticket owner claims back the price paid for a ticket to a cancelled event.
+    ///
+    /// Refunds are pulled by each holder rather than pushed by the organizer,
+    /// so cancelling never has to loop over every ticket in one transaction.
+    pub fn refund_ticket(
+        env: Env,
+        owner: Address,
+        event_id: u32,
+        ticket_id: u32,
+    ) -> Result<i128, Error> {
+        owner.require_auth();
+
+        let mut event = load_event(&env, event_id)?;
+        if event.status != EventStatus::Cancelled {
+            return Err(Error::EventNotCancelled);
+        }
+
+        let mut ticket = load_ticket(&env, event_id, ticket_id)?;
+        if ticket.owner != owner {
+            return Err(Error::NotTicketOwner);
+        }
+        if ticket.refunded {
+            return Err(Error::AlreadyRefunded);
+        }
+
+        let amount = ticket.price_paid;
+        ticket.refunded = true;
+        save(&env, &DataKey::Ticket(event_id, ticket_id), &ticket);
+        event.balance -= amount;
+        save(&env, &DataKey::Event(event_id), &event);
+        pay_out(&env, &owner, amount)?;
+
+        TicketRefunded {
+            event_id,
+            owner,
+            ticket_id,
+            amount,
+        }
+        .publish(&env);
+        Ok(amount)
+    }
+
+    /// Sponsor claims back everything they contributed to a cancelled event.
+    pub fn refund_sponsorship(env: Env, sponsor: Address, event_id: u32) -> Result<i128, Error> {
+        sponsor.require_auth();
+
+        let mut event = load_event(&env, event_id)?;
+        if event.status != EventStatus::Cancelled {
+            return Err(Error::EventNotCancelled);
+        }
+
+        let amount = load_sponsor_total(&env, event_id, &sponsor);
+        if amount == 0 {
+            return Err(Error::NothingToRefund);
+        }
+
+        save(
+            &env,
+            &DataKey::SponsorTotal(event_id, sponsor.clone()),
+            &0i128,
+        );
+        event.balance -= amount;
+        save(&env, &DataKey::Event(event_id), &event);
+        pay_out(&env, &sponsor, amount)?;
+
+        SponsorshipRefunded {
+            event_id,
+            sponsor,
+            amount,
+        }
+        .publish(&env);
+        Ok(amount)
+    }
+
     // ─── Queries — readable by anyone ────────────────────────────────────────
 
     pub fn get_event(env: Env, event_id: u32) -> Result<Event, Error> {
@@ -496,10 +661,14 @@ impl InowoContract {
 
     pub fn get_ticket(env: Env, event_id: u32, ticket_id: u32) -> Result<Ticket, Error> {
         require_event_exists(&env, event_id)?;
-        env.storage()
-            .persistent()
-            .get(&DataKey::Ticket(event_id, ticket_id))
-            .ok_or(Error::TicketNotFound)
+        load_ticket(&env, event_id, ticket_id)
+    }
+
+    /// Returns how much a sponsor currently has contributed (and not yet been
+    /// refunded) for an event.
+    pub fn get_sponsor_total(env: Env, event_id: u32, sponsor: Address) -> Result<i128, Error> {
+        require_event_exists(&env, event_id)?;
+        Ok(load_sponsor_total(&env, event_id, &sponsor))
     }
 
     pub fn get_sponsorships(env: Env, event_id: u32) -> Result<Vec<Sponsorship>, Error> {
