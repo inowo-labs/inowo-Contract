@@ -72,6 +72,19 @@ pub struct Sponsorship {
     pub amount: i128,
 }
 
+/// A public record of funds released from an event's escrow.
+#[contracttype]
+#[derive(Clone)]
+pub struct Payout {
+    pub recipient: Address,
+    pub amount: i128,
+    /// What the payout is for, e.g. "Sound crew" — required so every
+    /// disbursement explains itself next to the contributions it spends.
+    pub memo: String,
+    /// Ledger timestamp of the release.
+    pub timestamp: u64,
+}
+
 // ─── Errors ───────────────────────────────────────────────────────────────────
 
 /// Error codes are part of the contract's public interface — clients match on
@@ -99,6 +112,10 @@ pub enum Error {
     NotTicketOwner = 16,
     AlreadyRefunded = 17,
     NothingToRefund = 18,
+    EventNotEnded = 19,
+    InsufficientFunds = 20,
+    InvalidMemo = 21,
+    PayoutNotFound = 22,
 }
 
 // ─── Contract events ──────────────────────────────────────────────────────────
@@ -184,6 +201,18 @@ pub struct SponsorshipRefunded {
     pub amount: i128,
 }
 
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FundsReleased {
+    #[topic]
+    pub event_id: u32,
+    #[topic]
+    pub recipient: Address,
+    pub payout_id: u32,
+    pub amount: i128,
+    pub memo: String,
+}
+
 // ─── Storage keys ─────────────────────────────────────────────────────────────
 
 #[contracttype]
@@ -197,7 +226,14 @@ pub enum DataKey {
     Sponsorships(u32),
     /// Running total a sponsor has contributed to an event, owed back on cancellation.
     SponsorTotal(u32, Address),
+    PayoutCounter(u32),
+    /// One entry per payout so the history can grow without hitting entry size limits.
+    Payout(u32, u32),
+    TotalReleased(u32),
 }
+
+/// Upper bound on a payout memo, in bytes, to keep payout entries small.
+pub const MAX_MEMO_LEN: u32 = 200;
 
 // ─── Storage helpers ──────────────────────────────────────────────────────────
 
@@ -268,6 +304,17 @@ fn load_ticket(env: &Env, event_id: u32, ticket_id: u32) -> Result<Ticket, Error
         .persistent()
         .get(&DataKey::Ticket(event_id, ticket_id))
         .ok_or(Error::TicketNotFound)
+}
+
+fn load_u32(env: &Env, key: &DataKey) -> u32 {
+    env.storage().persistent().get(key).unwrap_or(0)
+}
+
+fn load_total_released(env: &Env, event_id: u32) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::TotalReleased(event_id))
+        .unwrap_or(0)
 }
 
 fn pay_out(env: &Env, to: &Address, amount: i128) -> Result<(), Error> {
@@ -649,6 +696,69 @@ impl InowoContract {
         Ok(amount)
     }
 
+    /// Organizer releases escrowed funds to a recipient (a worker, vendor, or
+    /// venue) after the event has ended. Every release is stored as a public
+    /// payout record with a memo explaining what it pays for.
+    /// Returns the payout ID.
+    pub fn release_funds(
+        env: Env,
+        organizer: Address,
+        event_id: u32,
+        recipient: Address,
+        amount: i128,
+        memo: String,
+    ) -> Result<u32, Error> {
+        organizer.require_auth();
+
+        let mut event = load_event(&env, event_id)?;
+        if event.organizer != organizer {
+            return Err(Error::NotOrganizer);
+        }
+        if event.status != EventStatus::Ended {
+            return Err(Error::EventNotEnded);
+        }
+        if amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+        if amount > event.balance {
+            return Err(Error::InsufficientFunds);
+        }
+        if memo.is_empty() || memo.len() > MAX_MEMO_LEN {
+            return Err(Error::InvalidMemo);
+        }
+
+        let payout_id = load_u32(&env, &DataKey::PayoutCounter(event_id));
+        save(&env, &DataKey::PayoutCounter(event_id), &(payout_id + 1));
+        save(
+            &env,
+            &DataKey::Payout(event_id, payout_id),
+            &Payout {
+                recipient: recipient.clone(),
+                amount,
+                memo: memo.clone(),
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+        save(
+            &env,
+            &DataKey::TotalReleased(event_id),
+            &(load_total_released(&env, event_id) + amount),
+        );
+        event.balance -= amount;
+        save(&env, &DataKey::Event(event_id), &event);
+        pay_out(&env, &recipient, amount)?;
+
+        FundsReleased {
+            event_id,
+            recipient,
+            payout_id,
+            amount,
+            memo,
+        }
+        .publish(&env);
+        Ok(payout_id)
+    }
+
     // ─── Queries — readable by anyone ────────────────────────────────────────
 
     pub fn get_event(env: Env, event_id: u32) -> Result<Event, Error> {
@@ -714,6 +824,27 @@ impl InowoContract {
 
     pub fn get_organizer(env: Env, event_id: u32) -> Result<Address, Error> {
         Ok(load_event(&env, event_id)?.organizer)
+    }
+
+    pub fn get_payout(env: Env, event_id: u32, payout_id: u32) -> Result<Payout, Error> {
+        require_event_exists(&env, event_id)?;
+        env.storage()
+            .persistent()
+            .get(&DataKey::Payout(event_id, payout_id))
+            .ok_or(Error::PayoutNotFound)
+    }
+
+    /// Returns the number of payouts released for an event.
+    pub fn payout_count(env: Env, event_id: u32) -> Result<u32, Error> {
+        require_event_exists(&env, event_id)?;
+        Ok(load_u32(&env, &DataKey::PayoutCounter(event_id)))
+    }
+
+    /// Returns the total USDC released from an event's escrow. Together with
+    /// `get_balance`, this shows how much was raised and how much was spent.
+    pub fn total_released(env: Env, event_id: u32) -> Result<i128, Error> {
+        require_event_exists(&env, event_id)?;
+        Ok(load_total_released(&env, event_id))
     }
 }
 
