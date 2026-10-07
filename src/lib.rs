@@ -1,8 +1,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, token::Client as TokenClient, Address,
-    Env, String, Vec,
+    contract, contracterror, contractevent, contractimpl, contracttype,
+    token::Client as TokenClient, Address, Env, IntoVal, String, Val, Vec,
 };
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -77,6 +77,7 @@ pub struct Sponsorship {
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum Error {
+    /// Reserved: setup now happens in the constructor, which cannot run twice.
     AlreadyInitialized = 1,
     NotInitialized = 2,
     EventNotFound = 3,
@@ -93,6 +94,60 @@ pub enum Error {
     InvalidAmount = 14,
 }
 
+// ─── Contract events ──────────────────────────────────────────────────────────
+//
+// Every state change emits an event so indexers can follow an event's full
+// money flow without polling contract storage.
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EventCreated {
+    #[topic]
+    pub event_id: u32,
+    #[topic]
+    pub organizer: Address,
+    pub funding_goal: i128,
+    pub date_unix: u64,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Sponsored {
+    #[topic]
+    pub event_id: u32,
+    #[topic]
+    pub sponsor: Address,
+    pub amount: i128,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TicketPurchased {
+    #[topic]
+    pub event_id: u32,
+    #[topic]
+    pub buyer: Address,
+    pub ticket_id: u32,
+    pub tier_index: u32,
+    pub price: i128,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TicketRedeemed {
+    #[topic]
+    pub event_id: u32,
+    pub ticket_id: u32,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EventEnded {
+    #[topic]
+    pub event_id: u32,
+    pub balance: i128,
+}
+
 // ─── Storage keys ─────────────────────────────────────────────────────────────
 
 #[contracttype]
@@ -107,6 +162,25 @@ pub enum DataKey {
 }
 
 // ─── Storage helpers ──────────────────────────────────────────────────────────
+
+const DAY_IN_LEDGERS: u32 = 17_280;
+// Entries are extended back to TTL_EXTEND_TO whenever they are written and
+// have fewer than TTL_THRESHOLD ledgers left, so active events never archive.
+const TTL_THRESHOLD: u32 = 30 * DAY_IN_LEDGERS;
+const TTL_EXTEND_TO: u32 = 120 * DAY_IN_LEDGERS;
+
+fn bump_instance(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
+}
+
+fn save<V: IntoVal<Env, Val>>(env: &Env, key: &DataKey, value: &V) {
+    env.storage().persistent().set(key, value);
+    env.storage()
+        .persistent()
+        .extend_ttl(key, TTL_THRESHOLD, TTL_EXTEND_TO);
+}
 
 fn load_token(env: &Env) -> Result<Address, Error> {
     env.storage()
@@ -151,14 +225,12 @@ pub struct InowoContract;
 
 #[contractimpl]
 impl InowoContract {
-    /// One-time setup: record the USDC token contract address.
-    pub fn initialize(env: Env, token: Address) -> Result<(), Error> {
-        if env.storage().instance().has(&DataKey::Token) {
-            return Err(Error::AlreadyInitialized);
-        }
+    /// Runs once, atomically with deployment: records the USDC token contract
+    /// address. Doing this in the constructor means no one can front-run setup.
+    pub fn __constructor(env: Env, token: Address) {
         env.storage().instance().set(&DataKey::Token, &token);
         env.storage().instance().set(&DataKey::EventCounter, &0u32);
-        Ok(())
+        bump_instance(&env);
     }
 
     /// Organizer creates a new event with one or more ticket tiers.
@@ -191,6 +263,7 @@ impl InowoContract {
             }
         }
 
+        bump_instance(&env);
         let event_id: u32 = env
             .storage()
             .instance()
@@ -200,10 +273,11 @@ impl InowoContract {
             .instance()
             .set(&DataKey::EventCounter, &(event_id + 1));
 
-        env.storage().persistent().set(
+        save(
+            &env,
             &DataKey::Event(event_id),
             &Event {
-                organizer,
+                organizer: organizer.clone(),
                 name,
                 description,
                 venue,
@@ -223,17 +297,21 @@ impl InowoContract {
                 tickets_sold: 0,
             });
         }
-        env.storage()
-            .persistent()
-            .set(&DataKey::Tiers(event_id), &tier_list);
-        env.storage()
-            .persistent()
-            .set(&DataKey::TicketCounter(event_id), &0u32);
+        save(&env, &DataKey::Tiers(event_id), &tier_list);
+        save(&env, &DataKey::TicketCounter(event_id), &0u32);
+        save(
+            &env,
+            &DataKey::Sponsorships(event_id),
+            &Vec::<Sponsorship>::new(&env),
+        );
 
-        let empty_s: Vec<Sponsorship> = Vec::new(&env);
-        env.storage()
-            .persistent()
-            .set(&DataKey::Sponsorships(event_id), &empty_s);
+        EventCreated {
+            event_id,
+            organizer,
+            funding_goal,
+            date_unix,
+        }
+        .publish(&env);
 
         Ok(event_id)
     }
@@ -269,33 +347,37 @@ impl InowoContract {
 
         tier.tickets_sold += 1;
         tiers.set(tier_index, tier);
-        env.storage()
-            .persistent()
-            .set(&DataKey::Tiers(event_id), &tiers);
+        save(&env, &DataKey::Tiers(event_id), &tiers);
 
         event.balance += price;
-        env.storage()
-            .persistent()
-            .set(&DataKey::Event(event_id), &event);
+        save(&env, &DataKey::Event(event_id), &event);
 
         let ticket_id: u32 = env
             .storage()
             .persistent()
             .get(&DataKey::TicketCounter(event_id))
             .unwrap_or(0);
-        env.storage()
-            .persistent()
-            .set(&DataKey::TicketCounter(event_id), &(ticket_id + 1));
+        save(&env, &DataKey::TicketCounter(event_id), &(ticket_id + 1));
 
-        env.storage().persistent().set(
+        save(
+            &env,
             &DataKey::Ticket(event_id, ticket_id),
             &Ticket {
                 event_id,
                 tier_index,
-                owner: buyer,
+                owner: buyer.clone(),
                 redeemed: false,
             },
         );
+
+        TicketPurchased {
+            event_id,
+            buyer,
+            ticket_id,
+            tier_index,
+            price,
+        }
+        .publish(&env);
 
         Ok(ticket_id)
     }
@@ -324,9 +406,13 @@ impl InowoContract {
         }
 
         ticket.redeemed = true;
-        env.storage()
-            .persistent()
-            .set(&DataKey::Ticket(event_id, ticket_id), &ticket);
+        save(&env, &DataKey::Ticket(event_id, ticket_id), &ticket);
+
+        TicketRedeemed {
+            event_id,
+            ticket_id,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -356,15 +442,21 @@ impl InowoContract {
         );
 
         let mut sponsorships = load_sponsorships(&env, event_id);
-        sponsorships.push_back(Sponsorship { sponsor, amount });
-        env.storage()
-            .persistent()
-            .set(&DataKey::Sponsorships(event_id), &sponsorships);
+        sponsorships.push_back(Sponsorship {
+            sponsor: sponsor.clone(),
+            amount,
+        });
+        save(&env, &DataKey::Sponsorships(event_id), &sponsorships);
 
         event.balance += amount;
-        env.storage()
-            .persistent()
-            .set(&DataKey::Event(event_id), &event);
+        save(&env, &DataKey::Event(event_id), &event);
+
+        Sponsored {
+            event_id,
+            sponsor,
+            amount,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -382,9 +474,13 @@ impl InowoContract {
         }
 
         event.status = EventStatus::Ended;
-        env.storage()
-            .persistent()
-            .set(&DataKey::Event(event_id), &event);
+        save(&env, &DataKey::Event(event_id), &event);
+
+        EventEnded {
+            event_id,
+            balance: event.balance,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -438,7 +534,7 @@ impl InowoContract {
         Ok(load_tiers(&env, event_id)?.len())
     }
 
-    /// Returns the token contract address configured during initialize.
+    /// Returns the token contract address configured at deployment.
     pub fn get_token(env: Env) -> Result<Address, Error> {
         load_token(&env)
     }

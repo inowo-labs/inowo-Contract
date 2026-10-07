@@ -1,8 +1,11 @@
 use super::*;
 use soroban_sdk::{
-    testutils::Address as _,
+    testutils::{
+        storage::{Instance as _, Persistent as _},
+        Address as _, Events as _,
+    },
     token::{Client as TokenClient, StellarAssetClient},
-    vec, Address, Env, String,
+    vec, Address, Env, Event as _, String,
 };
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -20,9 +23,8 @@ fn setup(
     let token_addr = token_contract.address();
     let token_admin_client = StellarAssetClient::new(env, &token_addr);
 
-    let contract_id = env.register(InowoContract, ());
+    let contract_id = env.register(InowoContract, (token_addr.clone(),));
     let client = InowoContractClient::new(env, &contract_id);
-    client.initialize(&token_addr);
 
     (token_addr, token_admin_client, contract_id, client)
 }
@@ -369,17 +371,6 @@ fn test_sponsor_rejected_on_ended_event() {
 
     let result = client.try_sponsor_event(&sponsor, &event_id, &100_000_000_i128);
     assert_eq!(result.err(), Some(Ok(Error::EventNotActive)));
-}
-
-#[test]
-fn test_double_initialize_rejected() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (token_addr, _, _, client) = setup(&env);
-
-    let result = client.try_initialize(&token_addr);
-    assert_eq!(result.err(), Some(Ok(Error::AlreadyInitialized)));
 }
 
 #[test]
@@ -749,18 +740,6 @@ fn test_redeem_nonexistent_ticket_fails() {
 }
 
 #[test]
-fn test_get_token_before_initialize_fails() {
-    let env = Env::default();
-    let contract_id = env.register(InowoContract, ());
-    let client = InowoContractClient::new(&env, &contract_id);
-
-    assert_eq!(
-        client.try_get_token().err(),
-        Some(Ok(Error::NotInitialized))
-    );
-}
-
-#[test]
 fn test_rejected_purchase_does_not_charge_buyer() {
     let env = Env::default();
     env.mock_all_auths();
@@ -798,4 +777,179 @@ fn test_error_codes_are_stable() {
     assert_eq!(Error::TierSoldOut as u32, 12);
     assert_eq!(Error::AlreadyRedeemed as u32, 13);
     assert_eq!(Error::InvalidAmount as u32, 14);
+}
+
+#[test]
+fn test_constructor_sets_token() {
+    let env = Env::default();
+    let token = Address::generate(&env);
+    let contract_id = env.register(InowoContract, (token.clone(),));
+    let client = InowoContractClient::new(&env, &contract_id);
+
+    assert_eq!(client.get_token(), token);
+    assert_eq!(client.event_count(), 0);
+}
+
+// ─── Contract events ─────────────────────────────────────────────────────────
+
+#[test]
+fn test_create_event_emits_event_created() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, contract_id, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let event_id = create_test_event(&env, &client, &organizer);
+
+    assert_eq!(
+        env.events().all().filter_by_contract(&contract_id),
+        [EventCreated {
+            event_id,
+            organizer,
+            funding_goal: 500_000_000,
+            date_unix: 1_750_000_000,
+        }
+        .to_xdr(&env, &contract_id)]
+    );
+}
+
+#[test]
+fn test_sponsor_event_emits_sponsored() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, contract_id, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let sponsor = Address::generate(&env);
+    token_admin.mint(&sponsor, &100_000_000_i128);
+    let event_id = create_test_event(&env, &client, &organizer);
+
+    client.sponsor_event(&sponsor, &event_id, &40_000_000_i128);
+
+    assert_eq!(
+        env.events().all().filter_by_contract(&contract_id),
+        [Sponsored {
+            event_id,
+            sponsor,
+            amount: 40_000_000,
+        }
+        .to_xdr(&env, &contract_id)]
+    );
+}
+
+#[test]
+fn test_buy_ticket_emits_ticket_purchased() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, contract_id, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    token_admin.mint(&buyer, &100_000_000_i128);
+    let event_id = create_test_event(&env, &client, &organizer);
+
+    let ticket_id = client.buy_ticket(&buyer, &event_id, &1);
+
+    assert_eq!(
+        env.events().all().filter_by_contract(&contract_id),
+        [TicketPurchased {
+            event_id,
+            buyer,
+            ticket_id,
+            tier_index: 1,
+            price: 50_000_000,
+        }
+        .to_xdr(&env, &contract_id)]
+    );
+}
+
+#[test]
+fn test_redeem_ticket_emits_ticket_redeemed() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, contract_id, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    token_admin.mint(&buyer, &100_000_000_i128);
+    let event_id = create_test_event(&env, &client, &organizer);
+    let ticket_id = client.buy_ticket(&buyer, &event_id, &0);
+
+    client.redeem_ticket(&organizer, &event_id, &ticket_id);
+
+    assert_eq!(
+        env.events().all().filter_by_contract(&contract_id),
+        [TicketRedeemed {
+            event_id,
+            ticket_id,
+        }
+        .to_xdr(&env, &contract_id)]
+    );
+}
+
+#[test]
+fn test_end_event_emits_event_ended_with_balance() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, contract_id, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let sponsor = Address::generate(&env);
+    token_admin.mint(&sponsor, &100_000_000_i128);
+    let event_id = create_test_event(&env, &client, &organizer);
+    client.sponsor_event(&sponsor, &event_id, &30_000_000_i128);
+
+    client.end_event(&organizer, &event_id);
+
+    assert_eq!(
+        env.events().all().filter_by_contract(&contract_id),
+        [EventEnded {
+            event_id,
+            balance: 30_000_000,
+        }
+        .to_xdr(&env, &contract_id)]
+    );
+}
+
+#[test]
+fn test_failed_call_emits_no_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, contract_id, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let event_id = create_test_event(&env, &client, &organizer);
+
+    let _ = client.try_sponsor_event(&organizer, &event_id, &0);
+
+    assert_eq!(env.events().all().filter_by_contract(&contract_id), []);
+}
+
+// ─── Storage TTL ─────────────────────────────────────────────────────────────
+
+#[test]
+fn test_writes_extend_storage_ttl() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, contract_id, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    token_admin.mint(&buyer, &100_000_000_i128);
+    let event_id = create_test_event(&env, &client, &organizer);
+    let ticket_id = client.buy_ticket(&buyer, &event_id, &0);
+
+    env.as_contract(&contract_id, || {
+        let persistent = env.storage().persistent();
+        for key in [
+            DataKey::Event(event_id),
+            DataKey::Tiers(event_id),
+            DataKey::TicketCounter(event_id),
+            DataKey::Sponsorships(event_id),
+            DataKey::Ticket(event_id, ticket_id),
+        ] {
+            assert_eq!(persistent.get_ttl(&key), TTL_EXTEND_TO);
+        }
+        assert_eq!(env.storage().instance().get_ttl(), TTL_EXTEND_TO);
+    });
 }

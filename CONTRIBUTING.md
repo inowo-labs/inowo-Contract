@@ -81,7 +81,9 @@ The compiled contract ends up at `target/wasm32v1-none/release/inowo_contract.wa
 stellar contract deploy \
   --wasm target/wasm32v1-none/release/inowo_contract.wasm \
   --network testnet \
-  --source <your-account>
+  --source <your-account> \
+  -- \
+  --token <usdc-token-contract-id>
 ```
 
 ## Making a contribution
@@ -95,7 +97,8 @@ stellar contract deploy \
 ## Code standards
 
 - This is a `no_std` Soroban contract. Don't introduce `std`-only dependencies.
-- Storage: use `persistent` for per-event data, `instance` for contract-wide config.
+- Storage: use `persistent` for per-event data, `instance` for contract-wide config. Write persistent entries through the `save` helper so their TTL is extended — a raw `set` can let the entry archive.
+- Events: every state-changing function publishes a `#[contractevent]` (see the Events table in the README). Add one for each new state change and assert it in a test.
 - Auth: any function that changes state on behalf of a user must call `address.require_auth()` at the top.
 - Error handling: return `Err(Error::...)` from the `Error` enum in `src/lib.rs` — never `panic!`. Panic messages are stripped from release builds, so clients only ever see the numeric error code. Add new variants at the end with the next number, and never renumber or reuse an existing code.
 - Comments: only add a comment when the *why* is non-obvious. Don't describe what the code does — the code does that.
