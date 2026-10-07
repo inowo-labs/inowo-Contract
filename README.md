@@ -18,7 +18,7 @@ Most community events — meetups, hackathons, campus and church events — run 
 1. **Create** — An organizer creates an event with a funding goal and one or more ticket tiers.
 2. **Fund** — Sponsors contribute USDC. Every contribution is recorded on-chain against the sponsor's address. Ticket sales flow into the same escrow.
 3. **Hold** — Funds sit in the contract, not in the organizer's wallet.
-4. **Release** — After the event, funds are paid out to named recipients through the contract, so every payout sits on the same ledger as every contribution. *(planned)*
+4. **Release** — After the event ends, the organizer releases funds to named recipients — workers, vendors, the venue. Each payout carries a memo saying what it pays for and sits on the same ledger as every contribution.
 5. **Refund** — If the event is cancelled, every sponsor and ticket holder can claim their money back from the contract in full.
 
 Over time, every event an organizer completes becomes a public track record: funds raised, funds released, refunds paid. That record is the organizer's reason to use Inowo — it's what earns sponsor trust for the next event.
@@ -46,13 +46,13 @@ Inowo is in early development on Stellar testnet. Here is exactly what exists to
 | Cancel and refund | Organizer cancels an active event; each ticket holder and sponsor claims a full refund from escrow |
 | Escrow | All USDC is held by the contract, tracked per event |
 | Contract events | Every state change is published as an on-chain event for indexers |
-| Read access | Anyone can query events, tiers, tickets, sponsorships, sponsor totals, and balances |
+| Release funds | After an event ends, the organizer pays recipients from escrow; each payout is a public record with a memo |
+| Read access | Anyone can query events, tiers, tickets, sponsorships, sponsor totals, balances, and payouts |
 
 ### Planned — open for contribution
 
 | Feature | Issue |
 |---------|-------|
-| Release funds to recipients after an event ends | [#2](https://github.com/inowo-labs/inowo-Contract/issues/2) |
 | Ticket transfer between holders | [#3](https://github.com/inowo-labs/inowo-Contract/issues/3) |
 | TypeScript bindings for the contract | [#4](https://github.com/inowo-labs/inowo-Contract/issues/4) |
 | Funding deadline — refund sponsors if the goal is not met | — |
@@ -77,11 +77,11 @@ All writes — creating events, sponsoring, buying tickets — are signed by the
 
 | Role | Can do today | Planned |
 |------|--------------|---------|
-| Organizer | Create events, define tiers, check in tickets, end or cancel events | Release funds, publish budget lines |
+| Organizer | Create events, define tiers, check in tickets, end or cancel events, release funds to recipients | Publish budget lines before funding opens |
 | Sponsor | Contribute USDC; view every sponsorship for an event; claim a full refund if the event is cancelled | Refund if the funding goal is missed |
 | Attendee | Buy tickets; prove ownership on-chain; claim a refund if the event is cancelled | Transfer tickets |
-| Recipient | — | Receive payouts from the event escrow |
-| Anyone | Read all events, tickets, sponsorships, and balances | Read payout history and organizer track records |
+| Recipient | Receive payouts from an event's escrow, each with a public memo | Attach proof of spend |
+| Anyone | Read all events, tickets, sponsorships, balances, and payout history | Read organizer track records |
 
 ## Data model
 
@@ -89,6 +89,7 @@ All writes — creating events, sponsoring, buying tickets — are signed by the
 - **Ticket tier** — a named price level (e.g. General, VIP) with a price and supply cap.
 - **Ticket** — an ownership record linking a buyer's address to an event and tier, with the price paid and redeemed / refunded flags.
 - **Sponsorship** — a contribution recorded against the sponsor's address.
+- **Payout** — a release from escrow: recipient, amount, memo, and timestamp.
 
 All amounts are in USDC stroops: `1 USDC = 10_000_000`.
 
@@ -153,6 +154,7 @@ The token address is passed to the contract's constructor, which runs atomically
 | `cancel_event` | `organizer: Address, event_id: u32` | — | Cancels an event (`Active` → `Cancelled`); blocks sales, sponsorships, and check-in, and opens refunds |
 | `refund_ticket` | `owner: Address, event_id: u32, ticket_id: u32` | `i128` (amount) | Ticket owner claims back the price paid for a ticket to a cancelled event |
 | `refund_sponsorship` | `sponsor: Address, event_id: u32` | `i128` (amount) | Sponsor claims back their total contribution to a cancelled event |
+| `release_funds` | `organizer: Address, event_id: u32, recipient: Address, amount: i128, memo: String` | `u32` (payout ID) | After an event ends, pays a recipient from escrow; `memo` (1–200 bytes) says what the payout is for |
 
 ### Read functions
 
@@ -165,6 +167,9 @@ The token address is passed to the contract's constructor, which runs atomically
 | `get_sponsor_total` | `event_id: u32, sponsor: Address` | `i128` | A sponsor's total contribution not yet refunded |
 | `get_balance` | `event_id: u32` | `i128` | USDC held in escrow for an event |
 | `get_organizer` | `event_id: u32` | `Address` | The event's organizer |
+| `get_payout` | `event_id: u32, payout_id: u32` | `Payout` | A single payout record |
+| `payout_count` | `event_id: u32` | `u32` | Payouts released for an event |
+| `total_released` | `event_id: u32` | `i128` | Total USDC released from an event's escrow |
 | `get_token` | — | `Address` | The configured USDC token address |
 | `event_count` | — | `u32` | Total events created |
 | `ticket_count` | `event_id: u32` | `u32` | Tickets sold for an event |
@@ -185,6 +190,7 @@ Every state change publishes a contract event, so indexers can follow an event's
 | `event_cancelled` | `event_id` | `balance` | `cancel_event` |
 | `ticket_refunded` | `event_id`, `owner` | `ticket_id`, `amount` | `refund_ticket` |
 | `sponsorship_refunded` | `event_id`, `sponsor` | `amount` | `refund_sponsorship` |
+| `funds_released` | `event_id`, `recipient` | `payout_id`, `amount`, `memo` | `release_funds` |
 
 ### Storage lifetime
 
@@ -214,6 +220,10 @@ Every function that can fail returns a typed error. On-chain, clients receive it
 | 16 | `NotTicketOwner` | The caller does not own the ticket |
 | 17 | `AlreadyRefunded` | The ticket has already been refunded |
 | 18 | `NothingToRefund` | The caller has no unrefunded sponsorship for the event |
+| 19 | `EventNotEnded` | Funds can only be released after the event has ended |
+| 20 | `InsufficientFunds` | The release amount exceeds the event's escrowed balance |
+| 21 | `InvalidMemo` | The payout memo is empty or longer than 200 bytes |
+| 22 | `PayoutNotFound` | No payout exists with the given ID for the event |
 
 ## Contributing
 
