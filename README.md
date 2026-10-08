@@ -132,12 +132,29 @@ stellar contract deploy \
 
 The token address is passed to the contract's constructor, which runs atomically with deployment.
 
+Or use the scripts, which build, deploy with Circle's testnet USDC, and seed demo data:
+
+```bash
+scripts/deploy-testnet.sh [key-alias]                # prints the new contract ID
+scripts/seed-testnet.sh <contract-id> [key-alias]    # key must hold ≥ 18.5 testnet USDC
+```
+
 ### Testnet deployment
 
 | | Address |
 |---|---|
-| Contract | `CABTSQOXHOOAFFWBPDIXAPAL7KKV76WFL3WLGBUH6SLJ7R2BO5YNWKFU` |
-| USDC token | `CAUJTFVKA5WCN4ZPUDBRDAS3DT5HVKNQTLFT32KDAFVGJRTB7VPRVNRT` |
+| Contract | [`CCWFDV2MIDV7QOEUJNZDFRRJY75O7S65JPVJ2S2WNARJ4INEMDTCNOPV`](https://stellar.expert/explorer/testnet/contract/CCWFDV2MIDV7QOEUJNZDFRRJY75O7S65JPVJ2S2WNARJ4INEMDTCNOPV) |
+| USDC token | `CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA` — Circle's testnet USDC |
+
+Get testnet USDC for your own account from [faucet.circle.com](https://faucet.circle.com) (choose Stellar), after adding a USDC trustline to issuer `GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5`.
+
+The deployment is seeded with three demo events covering the full lifecycle:
+
+| ID | Event | Status | What you'll find |
+|----|-------|--------|------------------|
+| 0 | Lagos Stellar Builders Meetup | `Active` | Two sponsorships and two tickets — open for you to sponsor or buy |
+| 1 | Soroban Smart Contract Workshop | `Ended` | A checked-in ticket and two payouts, to a venue and a crew, each with a memo |
+| 2 | Campus Hack Night | `Cancelled` | A sponsorship and a ticket, both refunded in full |
 
 ## Function reference
 

@@ -86,6 +86,13 @@ stellar contract deploy \
   --token <usdc-token-contract-id>
 ```
 
+To get your own deployment with demo data in one go, fund a key with testnet USDC from [faucet.circle.com](https://faucet.circle.com) and run:
+
+```bash
+CONTRACT=$(scripts/deploy-testnet.sh <your-key>)
+scripts/seed-testnet.sh "$CONTRACT" <your-key>
+```
+
 ## Making a contribution
 
 1. Fork the repository and create a branch named after the issue: `issue-42-ticket-transfer`.
