@@ -51,15 +51,18 @@ Inowo is in early development on Stellar testnet. Here is exactly what exists to
 
 ### Planned — open for contribution
 
-| Feature | Issue |
-|---------|-------|
-| Ticket transfer between holders | [#3](https://github.com/inowo-labs/inowo-Contract/issues/3) |
-| TypeScript bindings for the contract | [#4](https://github.com/inowo-labs/inowo-Contract/issues/4) |
-| Funding deadline — refund sponsors if the goal is not met | — |
-| Budget lines — organizer publishes planned spending per recipient before funding opens | — |
-| Proof of spend — attach a receipt hash to each payout | — |
-| Organizer track record — on-chain history of events delivered and funds released | — |
-| Contract events for indexers | — |
+| Feature | Difficulty | Issue |
+|---------|------------|-------|
+| Budget lines — organizer publishes planned spending per recipient before funding opens; releases are restricted to it | Hard | [#32](https://github.com/inowo-labs/inowo-Contract/issues/32) |
+| Funding deadline — anyone can cancel an underfunded event once the deadline passes, opening refunds | Hard | [#31](https://github.com/inowo-labs/inowo-Contract/issues/31) |
+| Property-based tests for escrow accounting invariants | Hard | [#38](https://github.com/inowo-labs/inowo-Contract/issues/38) |
+| Proof of spend — attach a receipt hash to each payout | Medium | [#33](https://github.com/inowo-labs/inowo-Contract/issues/33) |
+| Organizer track record — on-chain history of events delivered and funds released | Medium | [#34](https://github.com/inowo-labs/inowo-Contract/issues/34) |
+| Store sponsorships one per entry so history can't be spammed into failure | Medium | [#36](https://github.com/inowo-labs/inowo-Contract/issues/36) |
+| Look up an owner's tickets for an event | Medium | [#35](https://github.com/inowo-labs/inowo-Contract/issues/35) |
+| Ticket transfer between holders | Medium | [#3](https://github.com/inowo-labs/inowo-Contract/issues/3) |
+| TypeScript bindings for the contract | Medium | [#4](https://github.com/inowo-labs/inowo-Contract/issues/4) |
+| Reject events dated in the past | Easy | [#37](https://github.com/inowo-labs/inowo-Contract/issues/37) |
 
 ## Project structure
 
