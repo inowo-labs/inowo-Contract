@@ -6,7 +6,7 @@ Thanks for considering a contribution. This guide covers everything you need to 
 
 Inowo is a Soroban smart contract (Rust) for transparent event management on Stellar. Every financial action — sponsor contributions, ticket sales, and worker payouts — settles on-chain through a single contract that serves as the public ledger for an event.
 
-If you haven't read the README, do that first. It explains the roles, the transparency thesis, and the overall architecture.
+If you haven't read the README, do that first. It explains the roles, the transparency thesis, and the overall architecture. If you are changing how money moves, also read [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md): it lists the invariants your change must keep and the known limitations.
 
 ## Before you start
 
