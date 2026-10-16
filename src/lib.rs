@@ -116,6 +116,7 @@ pub enum Error {
     InsufficientFunds = 20,
     InvalidMemo = 21,
     PayoutNotFound = 22,
+    TransferToSelf = 23,
 }
 
 // ─── Contract events ──────────────────────────────────────────────────────────
@@ -154,6 +155,17 @@ pub struct TicketPurchased {
     pub ticket_id: u32,
     pub tier_index: u32,
     pub price: i128,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TicketTransferred {
+    #[topic]
+    pub event_id: u32,
+    #[topic]
+    pub from: Address,
+    pub to: Address,
+    pub ticket_id: u32,
 }
 
 #[contractevent]
@@ -486,6 +498,50 @@ impl InowoContract {
         .publish(&env);
 
         Ok(ticket_id)
+    }
+
+    /// The current owner hands a ticket to another address, e.g. when they can
+    /// no longer attend. Only possible while the event is `Active` and the
+    /// ticket has not been checked in.
+    ///
+    /// The ticket keeps its `price_paid`, so if the event is later cancelled the
+    /// refund goes to whoever owns the ticket at that point.
+    pub fn transfer_ticket(
+        env: Env,
+        from: Address,
+        event_id: u32,
+        ticket_id: u32,
+        to: Address,
+    ) -> Result<(), Error> {
+        from.require_auth();
+
+        let event = load_event(&env, event_id)?;
+        if event.status != EventStatus::Active {
+            return Err(Error::EventNotActive);
+        }
+
+        let mut ticket = load_ticket(&env, event_id, ticket_id)?;
+        if ticket.owner != from {
+            return Err(Error::NotTicketOwner);
+        }
+        if ticket.redeemed {
+            return Err(Error::AlreadyRedeemed);
+        }
+        if to == from {
+            return Err(Error::TransferToSelf);
+        }
+
+        ticket.owner = to.clone();
+        save(&env, &DataKey::Ticket(event_id, ticket_id), &ticket);
+
+        TicketTransferred {
+            event_id,
+            from,
+            to,
+            ticket_id,
+        }
+        .publish(&env);
+        Ok(())
     }
 
     /// Organizer checks in (redeems) a ticket at the door.

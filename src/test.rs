@@ -785,6 +785,7 @@ fn test_error_codes_are_stable() {
     assert_eq!(Error::InsufficientFunds as u32, 20);
     assert_eq!(Error::InvalidMemo as u32, 21);
     assert_eq!(Error::PayoutNotFound as u32, 22);
+    assert_eq!(Error::TransferToSelf as u32, 23);
 }
 
 #[test]
@@ -1520,4 +1521,280 @@ fn test_payout_queries_on_missing_data() {
         client.try_total_released(&99).err(),
         Some(Ok(Error::EventNotFound))
     );
+}
+
+// ─── Ticket transfer ─────────────────────────────────────────────────────────
+
+/// An active event where `buyer` holds ticket 0 (General, 1 USDC).
+fn event_with_ticket(
+    env: &Env,
+    client: &InowoContractClient,
+    token_admin: &StellarAssetClient,
+    organizer: &Address,
+    buyer: &Address,
+) -> (u32, u32) {
+    token_admin.mint(buyer, &100_000_000_i128);
+    let event_id = create_test_event(env, client, organizer);
+    let ticket_id = client.buy_ticket(buyer, &event_id, &0);
+    (event_id, ticket_id)
+}
+
+#[test]
+fn test_transfer_ticket_changes_owner_and_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, contract_id, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let (event_id, ticket_id) = event_with_ticket(&env, &client, &token_admin, &organizer, &alice);
+
+    client.transfer_ticket(&alice, &event_id, &ticket_id, &bob);
+    let events = env.events().all().filter_by_contract(&contract_id);
+
+    let ticket = client.get_ticket(&event_id, &ticket_id);
+    assert_eq!(ticket.owner, bob);
+    assert_eq!(ticket.price_paid, 10_000_000);
+    assert!(!ticket.redeemed && !ticket.refunded);
+    assert_eq!(
+        events,
+        [TicketTransferred {
+            event_id,
+            from: alice,
+            to: bob,
+            ticket_id,
+        }
+        .to_xdr(&env, &contract_id)]
+    );
+}
+
+#[test]
+fn test_transfer_ticket_moves_no_money() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (token_addr, token_admin, contract_id, client) = setup(&env);
+    let token = TokenClient::new(&env, &token_addr);
+    let organizer = Address::generate(&env);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let (event_id, ticket_id) = event_with_ticket(&env, &client, &token_admin, &organizer, &alice);
+
+    client.transfer_ticket(&alice, &event_id, &ticket_id, &bob);
+
+    assert_eq!(token.balance(&alice), 90_000_000);
+    assert_eq!(token.balance(&bob), 0);
+    assert_eq!(token.balance(&contract_id), 10_000_000);
+    assert_eq!(client.get_balance(&event_id), 10_000_000);
+    assert_eq!(client.ticket_count(&event_id), 1);
+}
+
+#[test]
+fn test_ticket_can_be_transferred_along_a_chain_of_owners() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let carol = Address::generate(&env);
+    let (event_id, ticket_id) = event_with_ticket(&env, &client, &token_admin, &organizer, &alice);
+
+    client.transfer_ticket(&alice, &event_id, &ticket_id, &bob);
+    client.transfer_ticket(&bob, &event_id, &ticket_id, &carol);
+
+    assert_eq!(client.get_ticket(&event_id, &ticket_id).owner, carol);
+    // The previous owners can no longer transfer it.
+    assert_eq!(
+        client
+            .try_transfer_ticket(&alice, &event_id, &ticket_id, &bob)
+            .err(),
+        Some(Ok(Error::NotTicketOwner))
+    );
+    assert_eq!(
+        client
+            .try_transfer_ticket(&bob, &event_id, &ticket_id, &alice)
+            .err(),
+        Some(Ok(Error::NotTicketOwner))
+    );
+}
+
+#[test]
+fn test_transfer_ticket_by_non_owner_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let alice = Address::generate(&env);
+    let thief = Address::generate(&env);
+    let (event_id, ticket_id) = event_with_ticket(&env, &client, &token_admin, &organizer, &alice);
+
+    let result = client.try_transfer_ticket(&thief, &event_id, &ticket_id, &thief);
+    assert_eq!(result.err(), Some(Ok(Error::NotTicketOwner)));
+    assert_eq!(client.get_ticket(&event_id, &ticket_id).owner, alice);
+}
+
+#[test]
+fn test_organizer_cannot_transfer_someone_elses_ticket() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let alice = Address::generate(&env);
+    let (event_id, ticket_id) = event_with_ticket(&env, &client, &token_admin, &organizer, &alice);
+
+    let result = client.try_transfer_ticket(&organizer, &event_id, &ticket_id, &organizer);
+    assert_eq!(result.err(), Some(Ok(Error::NotTicketOwner)));
+}
+
+#[test]
+fn test_transfer_redeemed_ticket_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let (event_id, ticket_id) = event_with_ticket(&env, &client, &token_admin, &organizer, &alice);
+    client.redeem_ticket(&organizer, &event_id, &ticket_id);
+
+    let result = client.try_transfer_ticket(&alice, &event_id, &ticket_id, &bob);
+    assert_eq!(result.err(), Some(Ok(Error::AlreadyRedeemed)));
+    assert_eq!(client.get_ticket(&event_id, &ticket_id).owner, alice);
+}
+
+#[test]
+fn test_transfer_on_ended_or_cancelled_event_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let (ended, ended_ticket) = event_with_ticket(&env, &client, &token_admin, &organizer, &alice);
+    let (cancelled, cancelled_ticket) =
+        event_with_ticket(&env, &client, &token_admin, &organizer, &alice);
+    client.end_event(&organizer, &ended);
+    client.cancel_event(&organizer, &cancelled);
+
+    assert_eq!(
+        client
+            .try_transfer_ticket(&alice, &ended, &ended_ticket, &bob)
+            .err(),
+        Some(Ok(Error::EventNotActive))
+    );
+    assert_eq!(
+        client
+            .try_transfer_ticket(&alice, &cancelled, &cancelled_ticket, &bob)
+            .err(),
+        Some(Ok(Error::EventNotActive))
+    );
+}
+
+#[test]
+fn test_transfer_ticket_to_self_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let alice = Address::generate(&env);
+    let (event_id, ticket_id) = event_with_ticket(&env, &client, &token_admin, &organizer, &alice);
+
+    let result = client.try_transfer_ticket(&alice, &event_id, &ticket_id, &alice);
+    assert_eq!(result.err(), Some(Ok(Error::TransferToSelf)));
+}
+
+#[test]
+fn test_transfer_missing_event_or_ticket_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let (event_id, _) = event_with_ticket(&env, &client, &token_admin, &organizer, &alice);
+
+    assert_eq!(
+        client.try_transfer_ticket(&alice, &99, &0, &bob).err(),
+        Some(Ok(Error::EventNotFound))
+    );
+    assert_eq!(
+        client
+            .try_transfer_ticket(&alice, &event_id, &99, &bob)
+            .err(),
+        Some(Ok(Error::TicketNotFound))
+    );
+}
+
+#[test]
+fn test_failed_transfer_emits_no_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, contract_id, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let alice = Address::generate(&env);
+    let (event_id, ticket_id) = event_with_ticket(&env, &client, &token_admin, &organizer, &alice);
+
+    let _ = client.try_transfer_ticket(&alice, &event_id, &ticket_id, &alice);
+
+    assert_eq!(env.events().all().filter_by_contract(&contract_id), []);
+}
+
+#[test]
+fn test_refund_after_transfer_goes_to_the_new_owner() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (token_addr, token_admin, _, client) = setup(&env);
+    let token = TokenClient::new(&env, &token_addr);
+    let organizer = Address::generate(&env);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let (event_id, ticket_id) = event_with_ticket(&env, &client, &token_admin, &organizer, &alice);
+    client.transfer_ticket(&alice, &event_id, &ticket_id, &bob);
+    client.cancel_event(&organizer, &event_id);
+
+    // The original buyer no longer has any claim on the ticket...
+    assert_eq!(
+        client
+            .try_refund_ticket(&alice, &event_id, &ticket_id)
+            .err(),
+        Some(Ok(Error::NotTicketOwner))
+    );
+    // ...and the current owner gets the price the ticket was bought for.
+    assert_eq!(
+        client.refund_ticket(&bob, &event_id, &ticket_id),
+        10_000_000
+    );
+    assert_eq!(token.balance(&bob), 10_000_000);
+    assert_eq!(token.balance(&alice), 90_000_000);
+    assert_eq!(client.get_balance(&event_id), 0);
+}
+
+#[test]
+fn test_new_owner_can_be_checked_in() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let (event_id, ticket_id) = event_with_ticket(&env, &client, &token_admin, &organizer, &alice);
+    client.transfer_ticket(&alice, &event_id, &ticket_id, &bob);
+
+    client.redeem_ticket(&organizer, &event_id, &ticket_id);
+
+    let ticket = client.get_ticket(&event_id, &ticket_id);
+    assert!(ticket.redeemed);
+    assert_eq!(ticket.owner, bob);
 }
