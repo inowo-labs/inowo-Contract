@@ -850,3 +850,6 @@ impl InowoContract {
 
 #[cfg(test)]
 mod test;
+
+#[cfg(test)]
+mod property_tests;

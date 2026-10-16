@@ -61,6 +61,25 @@ cargo test test_end_event_changes_status_to_ended
 cargo test end_event
 ```
 
+#### Property tests
+
+`src/property_tests.rs` runs random sequences of contract calls — valid and invalid — against a plain-Rust model of what the escrow should hold. After every step it checks that:
+
+- every event's escrow balance equals sponsorships + ticket sales − releases − refunds, and is never negative
+- the contract's USDC balance equals the sum of all event balances
+- every user's and recipient's USDC balance matches the model exactly
+- refunds return exactly the price paid or the sponsor's total, and only once
+- a cancelled event never releases funds
+- a rejected call changes nothing
+
+If you change how money moves, run them and extend the model in the same PR. CI runs 64 cases; run a deeper search locally with:
+
+```bash
+PROPTEST_CASES=2000 cargo test property_tests
+```
+
+When a property test fails, proptest prints a minimal failing sequence of operations — turn it into a regular unit test in `src/test.rs` alongside the fix.
+
 Add `-- --nocapture` to see `println!` output during tests:
 
 ```bash
