@@ -96,6 +96,8 @@ All writes — creating events, sponsoring, buying tickets — are signed by the
 
 All amounts are in USDC stroops: `1 USDC = 10_000_000`.
 
+For how money moves, what the contract guarantees, and its known limitations, read [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md).
+
 ## Getting started
 
 ### Prerequisites
