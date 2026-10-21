@@ -70,8 +70,9 @@ There is **no admin, owner, pause switch, or upgrade function.** Nobody — incl
 | `Event(id)` | persistent | organizer, metadata, goal, escrow `balance`, `status` |
 | `Tiers(id)` | persistent | tiers with price, cap, and tickets sold |
 | `TicketCounter(id)`, `Ticket(id, n)` | persistent | one entry per ticket: owner, tier, `price_paid`, `redeemed`, `refunded` |
-| `Sponsorships(id)` | persistent | the public list of contributions (see *Known limitations*) |
+| `SponsorshipCount(id)`, `Sponsorship(id, n)` | persistent | one entry per contribution, so a flood of tiny sponsorships can't grow a single entry past Soroban's size limit |
 | `SponsorTotal(id, sponsor)` | persistent | what each sponsor is owed if the event is cancelled |
+| `OwnerTicketCount(id, owner)`, `OwnerTicket(id, owner, n)` | persistent | every ticket an address has ever bought or received by transfer for an event — a history, not a live "currently owned" list |
 | `PayoutCounter(id)`, `Payout(id, n)`, `TotalReleased(id)` | persistent | one entry per payout: recipient, amount, memo, ledger time |
 
 Soroban archives storage entries whose TTL runs out. Every write goes through the `save` helper, which extends the written entry to 120 days when fewer than 30 remain, and the instance is extended the same way. Read-only calls do not extend anything, so an event nobody has written to for 120 days can be archived (restorable, but needs a restore transaction).
@@ -91,12 +92,11 @@ Every state change emits a contract event (see the Events table in the README), 
 These are real, they are tracked as issues, and a few are the project's most important next steps.
 
 1. **The organizer decides who gets paid.** After an event ends, `release_funds` can pay *any* address up to the escrow balance. An organizer can also end an event immediately after collecting sponsorships — even before its date — and release everything to themselves. Nothing today ties payouts to a promised budget. The fix is **published budget lines** that sponsors see before paying and that `release_funds` must follow ([#32](https://github.com/inowo-labs/inowo-Contract/issues/32)), supported by a **funding deadline** ([#31](https://github.com/inowo-labs/inowo-Contract/issues/31)) and **proof of spend** ([#33](https://github.com/inowo-labs/inowo-Contract/issues/33)). Until then, sponsors should treat an event as trust in its organizer, and the public payout list with memos is the accountability mechanism.
-2. **Sponsorship history can be spammed.** All contributions for an event live in one list that is rewritten on every sponsorship. Many tiny sponsorships make each call more expensive and can eventually exceed the storage entry limit, blocking further sponsorships for that event. Refunds are unaffected (they use per-sponsor totals). Tracked in [#36](https://github.com/inowo-labs/inowo-Contract/issues/36).
-3. **The funding goal does nothing.** It's stored and shown, but missing it has no effect: no deadline, no automatic cancellation ([#31](https://github.com/inowo-labs/inowo-Contract/issues/31)).
-4. **Money left in an ended event stays there.** After `end_event`, nothing can be refunded, and funds the organizer never releases remain in escrow indefinitely.
-5. **Tokens sent straight to the contract are lost.** Only `sponsor_event` and `buy_ticket` credit an event. USDC transferred to the contract address directly is not attributed to any event and cannot be recovered.
-6. **Event dates aren't validated.** `create_event` accepts a date in the past ([#37](https://github.com/inowo-labs/inowo-Contract/issues/37)).
-7. **Tickets are not transferable** ([#3](https://github.com/inowo-labs/inowo-Contract/issues/3)) and can't be looked up by owner ([#35](https://github.com/inowo-labs/inowo-Contract/issues/35)).
+2. **The funding goal does nothing.** It's stored and shown, but missing it has no effect: no deadline, no automatic cancellation ([#31](https://github.com/inowo-labs/inowo-Contract/issues/31)).
+3. **Money left in an ended event stays there.** After `end_event`, nothing can be refunded, and funds the organizer never releases remain in escrow indefinitely.
+4. **Tokens sent straight to the contract are lost.** Only `sponsor_event` and `buy_ticket` credit an event. USDC transferred to the contract address directly is not attributed to any event and cannot be recovered.
+5. **Event dates aren't validated.** `create_event` accepts a date in the past ([#37](https://github.com/inowo-labs/inowo-Contract/issues/37)).
+6. **The owner-ticket index is a history, not a live view.** `get_tickets_by_owner` returns every ticket an address has ever bought or received by transfer — including ones it has since transferred away. A caller has to check `get_ticket(...).owner` to confirm a returned ID is still current.
 
 ## Testing
 

@@ -235,7 +235,10 @@ pub enum DataKey {
     Tiers(u32),
     TicketCounter(u32),
     Ticket(u32, u32),
-    Sponsorships(u32),
+    SponsorshipCount(u32),
+    /// One entry per contribution so the public history can grow without a
+    /// single storage entry hitting Soroban's size limit (see MAX_SPONSORSHIP_PAGE).
+    Sponsorship(u32, u32),
     /// Running total a sponsor has contributed to an event, owed back on cancellation.
     SponsorTotal(u32, Address),
     PayoutCounter(u32),
@@ -255,6 +258,10 @@ pub const MAX_MEMO_LEN: u32 = 200;
 /// Most ticket IDs `get_tickets_by_owner` returns in one call, regardless of
 /// the requested `limit`, so a page always has a bounded, predictable cost.
 pub const MAX_OWNER_TICKET_PAGE: u32 = 50;
+
+/// Most sponsorships `get_sponsorships` returns in one call, regardless of
+/// the requested `limit`, so a page always has a bounded, predictable cost.
+pub const MAX_SPONSORSHIP_PAGE: u32 = 50;
 
 // ─── Storage helpers ──────────────────────────────────────────────────────────
 
@@ -304,13 +311,6 @@ fn load_tiers(env: &Env, event_id: u32) -> Result<Vec<TicketTier>, Error> {
         .persistent()
         .get(&DataKey::Tiers(event_id))
         .ok_or(Error::EventNotFound)
-}
-
-fn load_sponsorships(env: &Env, event_id: u32) -> Vec<Sponsorship> {
-    env.storage()
-        .persistent()
-        .get(&DataKey::Sponsorships(event_id))
-        .unwrap_or_else(|| Vec::new(env))
 }
 
 fn load_sponsor_total(env: &Env, event_id: u32, sponsor: &Address) -> i128 {
@@ -440,11 +440,6 @@ impl InowoContract {
         }
         save(&env, &DataKey::Tiers(event_id), &tier_list);
         save(&env, &DataKey::TicketCounter(event_id), &0u32);
-        save(
-            &env,
-            &DataKey::Sponsorships(event_id),
-            &Vec::<Sponsorship>::new(&env),
-        );
 
         EventCreated {
             event_id,
@@ -629,12 +624,16 @@ impl InowoContract {
             &amount,
         );
 
-        let mut sponsorships = load_sponsorships(&env, event_id);
-        sponsorships.push_back(Sponsorship {
-            sponsor: sponsor.clone(),
-            amount,
-        });
-        save(&env, &DataKey::Sponsorships(event_id), &sponsorships);
+        let index = load_u32(&env, &DataKey::SponsorshipCount(event_id));
+        save(&env, &DataKey::SponsorshipCount(event_id), &(index + 1));
+        save(
+            &env,
+            &DataKey::Sponsorship(event_id, index),
+            &Sponsorship {
+                sponsor: sponsor.clone(),
+                amount,
+            },
+        );
 
         let total = load_sponsor_total(&env, event_id, &sponsor) + amount;
         save(
@@ -903,9 +902,31 @@ impl InowoContract {
         Ok(load_sponsor_total(&env, event_id, &sponsor))
     }
 
-    pub fn get_sponsorships(env: Env, event_id: u32) -> Result<Vec<Sponsorship>, Error> {
+    /// Returns up to `limit` sponsorships (capped at `MAX_SPONSORSHIP_PAGE`)
+    /// starting at `start`, ordered by the time they were made. `start` past
+    /// the end returns an empty page rather than an error.
+    pub fn get_sponsorships(
+        env: Env,
+        event_id: u32,
+        start: u32,
+        limit: u32,
+    ) -> Result<Vec<Sponsorship>, Error> {
         require_event_exists(&env, event_id)?;
-        Ok(load_sponsorships(&env, event_id))
+        let count = load_u32(&env, &DataKey::SponsorshipCount(event_id));
+        let end = start
+            .saturating_add(limit.min(MAX_SPONSORSHIP_PAGE))
+            .min(count);
+
+        let mut out = Vec::new(&env);
+        for i in start..end {
+            let sponsorship: Sponsorship = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Sponsorship(event_id, i))
+                .expect("sponsorship index within count must exist");
+            out.push_back(sponsorship);
+        }
+        Ok(out)
     }
 
     pub fn event_count(env: Env) -> u32 {
@@ -927,7 +948,7 @@ impl InowoContract {
     /// Returns the total number of sponsorship contributions for an event.
     pub fn sponsor_count(env: Env, event_id: u32) -> Result<u32, Error> {
         require_event_exists(&env, event_id)?;
-        Ok(load_sponsorships(&env, event_id).len())
+        Ok(load_u32(&env, &DataKey::SponsorshipCount(event_id)))
     }
 
     /// Returns the number of ticket tiers for an event.

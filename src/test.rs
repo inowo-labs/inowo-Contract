@@ -206,7 +206,7 @@ fn test_sponsorship_is_publicly_recorded() {
     client.sponsor_event(&sponsor_a, &event_id, &200_000_000_i128);
     client.sponsor_event(&sponsor_b, &event_id, &300_000_000_i128);
 
-    let sponsorships = client.get_sponsorships(&event_id);
+    let sponsorships = client.get_sponsorships(&event_id, &0, &50);
     assert_eq!(sponsorships.len(), 2);
     assert_eq!(sponsorships.get(0).unwrap().sponsor, sponsor_a);
     assert_eq!(sponsorships.get(0).unwrap().amount, 200_000_000_i128);
@@ -695,7 +695,7 @@ fn test_queries_on_nonexistent_event_return_event_not_found() {
         Some(Ok(Error::EventNotFound))
     );
     assert_eq!(
-        client.try_get_sponsorships(&missing).err(),
+        client.try_get_sponsorships(&missing, &0, &50).err(),
         Some(Ok(Error::EventNotFound))
     );
     assert_eq!(
@@ -957,7 +957,6 @@ fn test_writes_extend_storage_ttl() {
             DataKey::Event(event_id),
             DataKey::Tiers(event_id),
             DataKey::TicketCounter(event_id),
-            DataKey::Sponsorships(event_id),
             DataKey::Ticket(event_id, ticket_id),
         ] {
             assert_eq!(persistent.get_ttl(&key), TTL_EXTEND_TO);
@@ -1800,6 +1799,180 @@ fn test_new_owner_can_be_checked_in() {
     let ticket = client.get_ticket(&event_id, &ticket_id);
     assert!(ticket.redeemed);
     assert_eq!(ticket.owner, bob);
+}
+
+// ─── Sponsorship storage (one entry per contribution) ────────────────────────
+
+#[test]
+fn test_get_sponsorships_pagination_bounds() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let event_id = create_test_event(&env, &client, &organizer);
+
+    let sponsors: StdVec<Address> = (0..5).map(|_| Address::generate(&env)).collect();
+    for (i, sponsor) in sponsors.iter().enumerate() {
+        token_admin.mint(sponsor, &100_000_000_i128);
+        client.sponsor_event(sponsor, &event_id, &(10_000_000_i128 * (i as i128 + 1)));
+    }
+
+    // A full page in order.
+    let all = client.get_sponsorships(&event_id, &0, &50);
+    assert_eq!(all.len(), 5);
+    for (i, sponsor) in sponsors.iter().enumerate() {
+        assert_eq!(all.get(i as u32).unwrap().sponsor, *sponsor);
+        assert_eq!(
+            all.get(i as u32).unwrap().amount,
+            10_000_000 * (i as i128 + 1)
+        );
+    }
+
+    // A page in the middle.
+    let middle = client.get_sponsorships(&event_id, &1, &2);
+    assert_eq!(middle.len(), 2);
+    assert_eq!(middle.get(0).unwrap().sponsor, sponsors[1]);
+    assert_eq!(middle.get(1).unwrap().sponsor, sponsors[2]);
+
+    // limit longer than what's left is clamped to what exists.
+    let tail = client.get_sponsorships(&event_id, &3, &50);
+    assert_eq!(tail.len(), 2);
+    assert_eq!(tail.get(0).unwrap().sponsor, sponsors[3]);
+    assert_eq!(tail.get(1).unwrap().sponsor, sponsors[4]);
+
+    // start at or past the end returns an empty page, not an error.
+    assert_eq!(client.get_sponsorships(&event_id, &5, &50).len(), 0);
+    assert_eq!(client.get_sponsorships(&event_id, &1000, &50).len(), 0);
+
+    // limit of 0 returns an empty page.
+    assert_eq!(client.get_sponsorships(&event_id, &0, &0).len(), 0);
+}
+
+#[test]
+fn test_get_sponsorships_limit_is_capped_at_max_page() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let event_id = create_test_event(&env, &client, &organizer);
+
+    for _ in 0..(MAX_SPONSORSHIP_PAGE + 10) {
+        let sponsor = Address::generate(&env);
+        token_admin.mint(&sponsor, &10_000_000_i128);
+        client.sponsor_event(&sponsor, &event_id, &1_000_000_i128);
+    }
+
+    // Asking for more than MAX_SPONSORSHIP_PAGE still returns at most that many.
+    let page = client.get_sponsorships(&event_id, &0, &(MAX_SPONSORSHIP_PAGE + 10));
+    assert_eq!(page.len(), MAX_SPONSORSHIP_PAGE);
+}
+
+#[test]
+fn test_many_sponsorships_all_succeed_and_are_all_readable() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    const N: u32 = 220;
+    let (_, token_admin, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let event_id = create_test_event(&env, &client, &organizer);
+
+    let sponsors: StdVec<Address> = (0..N)
+        .map(|_| {
+            let s = Address::generate(&env);
+            token_admin.mint(&s, &10_000_000_i128);
+            client.sponsor_event(&s, &event_id, &1_000_000_i128);
+            s
+        })
+        .collect();
+
+    assert_eq!(client.sponsor_count(&event_id), N);
+    assert_eq!(client.get_balance(&event_id), 1_000_000 * N as i128);
+
+    // Every contribution is readable by paging through in MAX_SPONSORSHIP_PAGE
+    // chunks, and comes back in the order it was made.
+    let mut seen: StdVec<Address> = StdVec::new();
+    let mut start = 0u32;
+    loop {
+        let page = client.get_sponsorships(&event_id, &start, &MAX_SPONSORSHIP_PAGE);
+        if page.is_empty() {
+            break;
+        }
+        for s in page.iter() {
+            seen.push(s.sponsor.clone());
+        }
+        start += MAX_SPONSORSHIP_PAGE;
+    }
+    assert_eq!(seen.len(), N as usize);
+    assert_eq!(seen, sponsors);
+}
+
+/// Proves the fix: before this change, every sponsorship rewrote one growing
+/// `Vec`, so each call wrote more bytes than the last, and the single entry
+/// could eventually hit Soroban's storage-entry size limit — at which point
+/// every further sponsorship for that event would fail outright, not just
+/// cost more. Each contribution is now its own entry, so a single
+/// `sponsor_event` call always touches the same number of entries and writes
+/// the same number of bytes, however many sponsorships came before it.
+#[test]
+fn test_sponsor_event_write_footprint_does_not_grow_with_sponsorship_count() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let event_id = create_test_event(&env, &client, &organizer);
+
+    // Soroban's cost_estimate() only reports the *last* top-level invocation,
+    // so call once, record its footprint, call again, and compare.
+    let sponsor_once = |amount: i128| -> (u32, u32) {
+        let s = Address::generate(&env);
+        token_admin.mint(&s, &amount);
+        client.sponsor_event(&s, &event_id, &amount);
+        let res = env.cost_estimate().resources();
+        (res.write_entries, res.write_bytes)
+    };
+
+    let (entries_1st, bytes_1st) = sponsor_once(1_000_000);
+    for _ in 0..198 {
+        sponsor_once(1_000_000);
+    }
+    let (entries_200th, bytes_200th) = sponsor_once(1_000_000);
+
+    assert_eq!(client.sponsor_count(&event_id), 200);
+    assert_eq!(
+        (entries_200th, bytes_200th),
+        (entries_1st, bytes_1st),
+        "the 200th sponsor_event call touched a different number of entries \
+         or wrote a different number of bytes than the 1st — the old design \
+         would have grown both with every call"
+    );
+}
+
+#[test]
+fn test_sponsorship_storage_extends_ttl() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, contract_id, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let sponsor = Address::generate(&env);
+    token_admin.mint(&sponsor, &100_000_000_i128);
+    let event_id = create_test_event(&env, &client, &organizer);
+
+    client.sponsor_event(&sponsor, &event_id, &10_000_000_i128);
+
+    env.as_contract(&contract_id, || {
+        let persistent = env.storage().persistent();
+        for key in [
+            DataKey::SponsorshipCount(event_id),
+            DataKey::Sponsorship(event_id, 0),
+        ] {
+            assert_eq!(persistent.get_ttl(&key), TTL_EXTEND_TO);
+        }
+    });
 }
 
 // ─── Tickets by owner ─────────────────────────────────────────────────────────
