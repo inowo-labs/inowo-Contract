@@ -72,6 +72,7 @@ There is **no admin, owner, pause switch, or upgrade function.** Nobody — incl
 | `TicketCounter(id)`, `Ticket(id, n)` | persistent | one entry per ticket: owner, tier, `price_paid`, `redeemed`, `refunded` |
 | `SponsorshipCount(id)`, `Sponsorship(id, n)` | persistent | one entry per contribution, so a flood of tiny sponsorships can't grow a single entry past Soroban's size limit |
 | `SponsorTotal(id, sponsor)` | persistent | what each sponsor is owed if the event is cancelled |
+| `OwnerTicketCount(id, owner)`, `OwnerTicket(id, owner, n)` | persistent | every ticket an address has ever bought or received by transfer for an event — a history, not a live "currently owned" list |
 | `PayoutCounter(id)`, `Payout(id, n)`, `TotalReleased(id)` | persistent | one entry per payout: recipient, amount, memo, ledger time |
 
 Soroban archives storage entries whose TTL runs out. Every write goes through the `save` helper, which extends the written entry to 120 days when fewer than 30 remain, and the instance is extended the same way. Read-only calls do not extend anything, so an event nobody has written to for 120 days can be archived (restorable, but needs a restore transaction).
@@ -95,7 +96,7 @@ These are real, they are tracked as issues, and a few are the project's most imp
 3. **Money left in an ended event stays there.** After `end_event`, nothing can be refunded, and funds the organizer never releases remain in escrow indefinitely.
 4. **Tokens sent straight to the contract are lost.** Only `sponsor_event` and `buy_ticket` credit an event. USDC transferred to the contract address directly is not attributed to any event and cannot be recovered.
 5. **Event dates aren't validated.** `create_event` accepts a date in the past ([#37](https://github.com/inowo-labs/inowo-Contract/issues/37)).
-6. **Tickets can't be looked up by owner.** `transfer_ticket` lets an owner hand off a ticket, but there's no index to find "all tickets owned by this address" — a caller has to already know a ticket's ID ([#35](https://github.com/inowo-labs/inowo-Contract/issues/35)).
+6. **The owner-ticket index is a history, not a live view.** `get_tickets_by_owner` returns every ticket an address has ever bought or received by transfer — including ones it has since transferred away. A caller has to check `get_ticket(...).owner` to confirm a returned ID is still current.
 
 ## Testing
 
