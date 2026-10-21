@@ -59,7 +59,6 @@ Inowo is in early development on Stellar testnet. Here is exactly what exists to
 | Property-based tests for escrow accounting invariants | Hard | [#38](https://github.com/inowo-labs/inowo-Contract/issues/38) |
 | Proof of spend — attach a receipt hash to each payout | Medium | [#33](https://github.com/inowo-labs/inowo-Contract/issues/33) |
 | Organizer track record — on-chain history of events delivered and funds released | Medium | [#34](https://github.com/inowo-labs/inowo-Contract/issues/34) |
-| Store sponsorships one per entry so history can't be spammed into failure | Medium | [#36](https://github.com/inowo-labs/inowo-Contract/issues/36) |
 | Look up an owner's tickets for an event | Medium | [#35](https://github.com/inowo-labs/inowo-Contract/issues/35) |
 | TypeScript bindings for the contract | Medium | [#4](https://github.com/inowo-labs/inowo-Contract/issues/4) |
 | Reject events dated in the past | Easy | [#37](https://github.com/inowo-labs/inowo-Contract/issues/37) |
@@ -186,7 +185,7 @@ The deployment is seeded with three demo events covering the full lifecycle:
 | `get_event` | `event_id: u32` | `Event` | Full event record |
 | `get_tiers` | `event_id: u32` | `Vec<TicketTier>` | Ticket tiers with live sales counts |
 | `get_ticket` | `event_id: u32, ticket_id: u32` | `Ticket` | A single ticket's ownership record |
-| `get_sponsorships` | `event_id: u32` | `Vec<Sponsorship>` | All sponsorships for an event |
+| `get_sponsorships` | `event_id: u32, start: u32, limit: u32` | `Vec<Sponsorship>` | A page of sponsorships, ordered by contribution time; `limit` is capped at `MAX_SPONSORSHIP_PAGE` (50) |
 | `get_sponsor_total` | `event_id: u32, sponsor: Address` | `i128` | A sponsor's total contribution not yet refunded |
 | `get_balance` | `event_id: u32` | `i128` | USDC held in escrow for an event |
 | `get_organizer` | `event_id: u32` | `Address` | The event's organizer |
