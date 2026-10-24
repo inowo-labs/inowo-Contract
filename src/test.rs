@@ -1974,3 +1974,204 @@ fn test_sponsorship_storage_extends_ttl() {
         }
     });
 }
+
+// ─── Tickets by owner ─────────────────────────────────────────────────────────
+
+#[test]
+fn test_buy_ticket_indexes_it_under_the_buyer() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let alice = Address::generate(&env);
+    token_admin.mint(&alice, &100_000_000_i128);
+    let event_id = create_test_event(&env, &client, &organizer);
+
+    assert_eq!(client.owner_ticket_count(&event_id, &alice), 0);
+
+    let t0 = client.buy_ticket(&alice, &event_id, &0);
+    let t1 = client.buy_ticket(&alice, &event_id, &1);
+
+    assert_eq!(client.owner_ticket_count(&event_id, &alice), 2);
+    assert_eq!(
+        client.get_tickets_by_owner(&event_id, &alice, &0, &50),
+        vec![&env, t0, t1]
+    );
+}
+
+#[test]
+fn test_tickets_by_owner_is_per_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let alice = Address::generate(&env);
+    token_admin.mint(&alice, &200_000_000_i128);
+    let event_a = create_test_event(&env, &client, &organizer);
+    let event_b = create_test_event(&env, &client, &organizer);
+
+    client.buy_ticket(&alice, &event_a, &0);
+
+    assert_eq!(client.owner_ticket_count(&event_a, &alice), 1);
+    assert_eq!(client.owner_ticket_count(&event_b, &alice), 0);
+    assert_eq!(
+        client.get_tickets_by_owner(&event_b, &alice, &0, &50).len(),
+        0
+    );
+}
+
+#[test]
+fn test_transferred_ticket_is_indexed_under_the_new_owner_without_removing_history() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    token_admin.mint(&alice, &100_000_000_i128);
+    let event_id = create_test_event(&env, &client, &organizer);
+    let ticket_id = client.buy_ticket(&alice, &event_id, &0);
+
+    client.transfer_ticket(&alice, &event_id, &ticket_id, &bob);
+
+    // The ticket now shows up under bob's history...
+    assert_eq!(client.owner_ticket_count(&event_id, &bob), 1);
+    assert_eq!(
+        client.get_tickets_by_owner(&event_id, &bob, &0, &50),
+        vec![&env, ticket_id]
+    );
+    // ...and the current owner, via get_ticket, confirms it's really bob's.
+    assert_eq!(client.get_ticket(&event_id, &ticket_id).owner, bob);
+
+    // alice's history still lists it (she once held it) - callers are
+    // expected to check get_ticket().owner to find out it's no longer hers.
+    assert_eq!(client.owner_ticket_count(&event_id, &alice), 1);
+    let alice_ticket = client
+        .get_tickets_by_owner(&event_id, &alice, &0, &50)
+        .get(0)
+        .unwrap();
+    assert_eq!(alice_ticket, ticket_id);
+    assert_ne!(client.get_ticket(&event_id, &alice_ticket).owner, alice);
+}
+
+#[test]
+fn test_tickets_by_owner_follows_a_chain_of_transfers() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let carol = Address::generate(&env);
+    token_admin.mint(&alice, &100_000_000_i128);
+    let event_id = create_test_event(&env, &client, &organizer);
+    let ticket_id = client.buy_ticket(&alice, &event_id, &0);
+
+    client.transfer_ticket(&alice, &event_id, &ticket_id, &bob);
+    client.transfer_ticket(&bob, &event_id, &ticket_id, &carol);
+
+    assert_eq!(client.owner_ticket_count(&event_id, &carol), 1);
+    assert_eq!(client.get_ticket(&event_id, &ticket_id).owner, carol);
+    // bob held it only briefly, but it's still in his history too.
+    assert_eq!(client.owner_ticket_count(&event_id, &bob), 1);
+}
+
+#[test]
+fn test_get_tickets_by_owner_pagination_bounds() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let alice = Address::generate(&env);
+    token_admin.mint(&alice, &500_000_000_i128);
+    let event_id = create_test_event(&env, &client, &organizer);
+
+    let bought: StdVec<u32> = (0..5)
+        .map(|_| client.buy_ticket(&alice, &event_id, &0))
+        .collect();
+
+    let all = client.get_tickets_by_owner(&event_id, &alice, &0, &50);
+    assert_eq!(all.len(), 5);
+    for (i, id) in bought.iter().enumerate() {
+        assert_eq!(all.get(i as u32).unwrap(), *id);
+    }
+
+    let middle = client.get_tickets_by_owner(&event_id, &alice, &1, &2);
+    assert_eq!(middle.len(), 2);
+    assert_eq!(middle.get(0).unwrap(), bought[1]);
+    assert_eq!(middle.get(1).unwrap(), bought[2]);
+
+    assert_eq!(
+        client
+            .get_tickets_by_owner(&event_id, &alice, &5, &50)
+            .len(),
+        0
+    );
+    assert_eq!(
+        client
+            .get_tickets_by_owner(&event_id, &alice, &1000, &50)
+            .len(),
+        0
+    );
+    assert_eq!(
+        client.get_tickets_by_owner(&event_id, &alice, &0, &0).len(),
+        0
+    );
+}
+
+#[test]
+fn test_get_tickets_by_owner_limit_is_capped_at_max_page() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let alice = Address::generate(&env);
+    let tiers = vec![
+        &env,
+        TierInput {
+            name: String::from_str(&env, "General"),
+            price: 1_000_000_i128,
+            supply_cap: MAX_OWNER_TICKET_PAGE + 10,
+        },
+    ];
+    let event_id = client.create_event(
+        &organizer,
+        &String::from_str(&env, "Big event"),
+        &String::from_str(&env, "desc"),
+        &String::from_str(&env, "venue"),
+        &1_750_000_000_u64,
+        &100_000_000_i128,
+        &tiers,
+    );
+    token_admin.mint(&alice, &1_000_000_000_i128);
+    for _ in 0..(MAX_OWNER_TICKET_PAGE + 10) {
+        client.buy_ticket(&alice, &event_id, &0);
+    }
+
+    let page = client.get_tickets_by_owner(&event_id, &alice, &0, &(MAX_OWNER_TICKET_PAGE + 10));
+    assert_eq!(page.len(), MAX_OWNER_TICKET_PAGE);
+}
+
+#[test]
+fn test_tickets_by_owner_on_nonexistent_event_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, client) = setup(&env);
+    let alice = Address::generate(&env);
+
+    assert_eq!(
+        client.try_get_tickets_by_owner(&99, &alice, &0, &50).err(),
+        Some(Ok(Error::EventNotFound))
+    );
+    assert_eq!(
+        client.try_owner_ticket_count(&99, &alice).err(),
+        Some(Ok(Error::EventNotFound))
+    );
+}

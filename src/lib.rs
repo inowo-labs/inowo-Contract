@@ -245,10 +245,19 @@ pub enum DataKey {
     /// One entry per payout so the history can grow without hitting entry size limits.
     Payout(u32, u32),
     TotalReleased(u32),
+    OwnerTicketCount(u32, Address),
+    /// One entry per ticket an address has ever bought or received by
+    /// transfer for an event — a history, not a live "currently owned" list.
+    /// See `get_tickets_by_owner`.
+    OwnerTicket(u32, Address, u32),
 }
 
 /// Upper bound on a payout memo, in bytes, to keep payout entries small.
 pub const MAX_MEMO_LEN: u32 = 200;
+
+/// Most ticket IDs `get_tickets_by_owner` returns in one call, regardless of
+/// the requested `limit`, so a page always has a bounded, predictable cost.
+pub const MAX_OWNER_TICKET_PAGE: u32 = 50;
 
 /// Most sponsorships `get_sponsorships` returns in one call, regardless of
 /// the requested `limit`, so a page always has a bounded, predictable cost.
@@ -320,6 +329,22 @@ fn load_ticket(env: &Env, event_id: u32, ticket_id: u32) -> Result<Ticket, Error
 
 fn load_u32(env: &Env, key: &DataKey) -> u32 {
     env.storage().persistent().get(key).unwrap_or(0)
+}
+
+/// Records that `owner` has held `ticket_id` for `event_id`, called on both
+/// `buy_ticket` and `transfer_ticket` so the history follows the ticket.
+fn append_owner_ticket(env: &Env, event_id: u32, owner: &Address, ticket_id: u32) {
+    let index = load_u32(env, &DataKey::OwnerTicketCount(event_id, owner.clone()));
+    save(
+        env,
+        &DataKey::OwnerTicketCount(event_id, owner.clone()),
+        &(index + 1),
+    );
+    save(
+        env,
+        &DataKey::OwnerTicket(event_id, owner.clone(), index),
+        &ticket_id,
+    );
 }
 
 fn load_total_released(env: &Env, event_id: u32) -> i128 {
@@ -482,6 +507,7 @@ impl InowoContract {
                 refunded: false,
             },
         );
+        append_owner_ticket(&env, event_id, &buyer, ticket_id);
 
         TicketPurchased {
             event_id,
@@ -528,6 +554,7 @@ impl InowoContract {
 
         ticket.owner = to.clone();
         save(&env, &DataKey::Ticket(event_id, ticket_id), &ticket);
+        append_owner_ticket(&env, event_id, &to, ticket_id);
 
         TicketTransferred {
             event_id,
@@ -827,6 +854,45 @@ impl InowoContract {
     pub fn get_ticket(env: Env, event_id: u32, ticket_id: u32) -> Result<Ticket, Error> {
         require_event_exists(&env, event_id)?;
         load_ticket(&env, event_id, ticket_id)
+    }
+
+    /// Returns up to `limit` (capped at `MAX_OWNER_TICKET_PAGE`) ticket IDs
+    /// `owner` has bought or received by transfer, starting at `start`.
+    ///
+    /// This is a history, not a live "currently owned" list: a ticket appears
+    /// here under every address that has ever held it, including one it was
+    /// later transferred away from. Check `get_ticket(event_id, id).owner`
+    /// against `owner` to find out which of these are still current.
+    pub fn get_tickets_by_owner(
+        env: Env,
+        event_id: u32,
+        owner: Address,
+        start: u32,
+        limit: u32,
+    ) -> Result<Vec<u32>, Error> {
+        require_event_exists(&env, event_id)?;
+        let count = load_u32(&env, &DataKey::OwnerTicketCount(event_id, owner.clone()));
+        let end = start
+            .saturating_add(limit.min(MAX_OWNER_TICKET_PAGE))
+            .min(count);
+
+        let mut out = Vec::new(&env);
+        for i in start..end {
+            let ticket_id: u32 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::OwnerTicket(event_id, owner.clone(), i))
+                .expect("owner ticket index within count must exist");
+            out.push_back(ticket_id);
+        }
+        Ok(out)
+    }
+
+    /// Returns how many tickets `owner` has ever bought or received by
+    /// transfer for an event (see `get_tickets_by_owner` for what that means).
+    pub fn owner_ticket_count(env: Env, event_id: u32, owner: Address) -> Result<u32, Error> {
+        require_event_exists(&env, event_id)?;
+        Ok(load_u32(&env, &DataKey::OwnerTicketCount(event_id, owner)))
     }
 
     /// Returns how much a sponsor currently has contributed (and not yet been
