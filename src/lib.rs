@@ -2,7 +2,7 @@
 
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype,
-    token::Client as TokenClient, Address, Env, IntoVal, String, Val, Vec,
+    token::Client as TokenClient, Address, BytesN, Env, IntoVal, String, Val, Vec,
 };
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -83,6 +83,12 @@ pub struct Payout {
     pub memo: String,
     /// Ledger timestamp of the release.
     pub timestamp: u64,
+    /// SHA-256 of a receipt document proving what the payout was spent on.
+    /// Settable once via `attach_receipt`, after the payout is made.
+    pub receipt_hash: Option<BytesN<32>>,
+    /// Where to find the receipt document itself, e.g. an IPFS CID. The hash
+    /// above is what proves it matches; this is just how to find it.
+    pub receipt_uri: Option<String>,
 }
 
 // ─── Errors ───────────────────────────────────────────────────────────────────
@@ -117,6 +123,8 @@ pub enum Error {
     InvalidMemo = 21,
     PayoutNotFound = 22,
     TransferToSelf = 23,
+    ReceiptAlreadyAttached = 24,
+    InvalidReceiptUri = 25,
 }
 
 // ─── Contract events ──────────────────────────────────────────────────────────
@@ -225,6 +233,15 @@ pub struct FundsReleased {
     pub memo: String,
 }
 
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReceiptAttached {
+    #[topic]
+    pub event_id: u32,
+    pub payout_id: u32,
+    pub receipt_hash: BytesN<32>,
+}
+
 // ─── Storage keys ─────────────────────────────────────────────────────────────
 
 #[contracttype]
@@ -254,6 +271,10 @@ pub enum DataKey {
 
 /// Upper bound on a payout memo, in bytes, to keep payout entries small.
 pub const MAX_MEMO_LEN: u32 = 200;
+
+/// Upper bound on a receipt URI, in bytes — long enough for an IPFS CID or a
+/// short URL, not a full document.
+pub const MAX_RECEIPT_URI_LEN: u32 = 200;
 
 /// Most ticket IDs `get_tickets_by_owner` returns in one call, regardless of
 /// the requested `limit`, so a page always has a bounded, predictable cost.
@@ -819,6 +840,8 @@ impl InowoContract {
                 amount,
                 memo: memo.clone(),
                 timestamp: env.ledger().timestamp(),
+                receipt_hash: None,
+                receipt_uri: None,
             },
         );
         save(
@@ -839,6 +862,52 @@ impl InowoContract {
         }
         .publish(&env);
         Ok(payout_id)
+    }
+
+    /// Organizer attaches a receipt hash (and optionally where to find the
+    /// document itself) to a payout as proof of spend. Settable only once
+    /// per payout — a receipt is evidence, not something to revise later.
+    pub fn attach_receipt(
+        env: Env,
+        organizer: Address,
+        event_id: u32,
+        payout_id: u32,
+        receipt_hash: BytesN<32>,
+        receipt_uri: Option<String>,
+    ) -> Result<(), Error> {
+        organizer.require_auth();
+
+        let event = load_event(&env, event_id)?;
+        if event.organizer != organizer {
+            return Err(Error::NotOrganizer);
+        }
+        if let Some(uri) = &receipt_uri {
+            if uri.len() > MAX_RECEIPT_URI_LEN {
+                return Err(Error::InvalidReceiptUri);
+            }
+        }
+
+        let key = DataKey::Payout(event_id, payout_id);
+        let mut payout: Payout = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::PayoutNotFound)?;
+        if payout.receipt_hash.is_some() {
+            return Err(Error::ReceiptAlreadyAttached);
+        }
+
+        payout.receipt_hash = Some(receipt_hash.clone());
+        payout.receipt_uri = receipt_uri;
+        save(&env, &key, &payout);
+
+        ReceiptAttached {
+            event_id,
+            payout_id,
+            receipt_hash,
+        }
+        .publish(&env);
+        Ok(())
     }
 
     // ─── Queries — readable by anyone ────────────────────────────────────────

@@ -48,6 +48,7 @@ Inowo is in early development on Stellar testnet. Here is exactly what exists to
 | Escrow | All USDC is held by the contract, tracked per event |
 | Contract events | Every state change is published as an on-chain event for indexers |
 | Release funds | After an event ends, the organizer pays recipients from escrow; each payout is a public record with a memo |
+| Proof of spend | Organizer attaches a SHA-256 receipt hash (and optional URI) to a payout, once, as evidence of what it paid for |
 | Read access | Anyone can query events, tiers, tickets, sponsorships, sponsor totals, balances, and payouts |
 
 ### Planned — open for contribution
@@ -57,7 +58,6 @@ Inowo is in early development on Stellar testnet. Here is exactly what exists to
 | Budget lines — organizer publishes planned spending per recipient before funding opens; releases are restricted to it | Hard | [#32](https://github.com/inowo-labs/inowo-Contract/issues/32) |
 | Funding deadline — anyone can cancel an underfunded event once the deadline passes, opening refunds | Hard | [#31](https://github.com/inowo-labs/inowo-Contract/issues/31) |
 | Property-based tests for escrow accounting invariants | Hard | [#38](https://github.com/inowo-labs/inowo-Contract/issues/38) |
-| Proof of spend — attach a receipt hash to each payout | Medium | [#33](https://github.com/inowo-labs/inowo-Contract/issues/33) |
 | Organizer track record — on-chain history of events delivered and funds released | Medium | [#34](https://github.com/inowo-labs/inowo-Contract/issues/34) |
 | TypeScript bindings for the contract | Medium | [#4](https://github.com/inowo-labs/inowo-Contract/issues/4) |
 | Reject events dated in the past | Easy | [#37](https://github.com/inowo-labs/inowo-Contract/issues/37) |
@@ -176,6 +176,7 @@ The deployment is seeded with three demo events covering the full lifecycle:
 | `refund_ticket` | `owner: Address, event_id: u32, ticket_id: u32` | `i128` (amount) | Ticket owner claims back the price paid for a ticket to a cancelled event |
 | `refund_sponsorship` | `sponsor: Address, event_id: u32` | `i128` (amount) | Sponsor claims back their total contribution to a cancelled event |
 | `release_funds` | `organizer: Address, event_id: u32, recipient: Address, amount: i128, memo: String` | `u32` (payout ID) | After an event ends, pays a recipient from escrow; `memo` (1–200 bytes) says what the payout is for |
+| `attach_receipt` | `organizer: Address, event_id: u32, payout_id: u32, receipt_hash: BytesN<32>, receipt_uri: Option<String>` | — | Attaches a SHA-256 receipt hash (and optionally where to find the document, e.g. an IPFS CID, up to 200 bytes) to a payout as proof of spend; settable only once per payout |
 
 ### Read functions
 
@@ -190,7 +191,7 @@ The deployment is seeded with three demo events covering the full lifecycle:
 | `get_sponsor_total` | `event_id: u32, sponsor: Address` | `i128` | A sponsor's total contribution not yet refunded |
 | `get_balance` | `event_id: u32` | `i128` | USDC held in escrow for an event |
 | `get_organizer` | `event_id: u32` | `Address` | The event's organizer |
-| `get_payout` | `event_id: u32, payout_id: u32` | `Payout` | A single payout record |
+| `get_payout` | `event_id: u32, payout_id: u32` | `Payout` | A single payout record, including its receipt hash and URI if one has been attached |
 | `payout_count` | `event_id: u32` | `u32` | Payouts released for an event |
 | `total_released` | `event_id: u32` | `i128` | Total USDC released from an event's escrow |
 | `get_token` | — | `Address` | The configured USDC token address |
@@ -215,10 +216,21 @@ Every state change publishes a contract event, so indexers can follow an event's
 | `ticket_refunded` | `event_id`, `owner` | `ticket_id`, `amount` | `refund_ticket` |
 | `sponsorship_refunded` | `event_id`, `sponsor` | `amount` | `refund_sponsorship` |
 | `funds_released` | `event_id`, `recipient` | `payout_id`, `amount`, `memo` | `release_funds` |
+| `receipt_attached` | `event_id` | `payout_id`, `receipt_hash` | `attach_receipt` |
 
 ### Storage lifetime
 
 Soroban archives storage entries whose TTL runs out. Every write extends the entry it touches, and the contract instance, to 120 days whenever fewer than 30 days remain, so active events stay live.
+
+### Verifying a receipt
+
+A payout's `receipt_hash` is a SHA-256 digest, not the document itself — it proves a document matches without exposing it on-chain. To check a receipt against a payout:
+
+```sh
+sha256sum receipt.pdf
+```
+
+Compare the hex digest to `get_payout(event_id, payout_id).receipt_hash`. If `receipt_uri` is set, fetch the document from there first (e.g. `ipfs://...`) before hashing it.
 
 ### Errors
 
@@ -249,6 +261,8 @@ Every function that can fail returns a typed error. On-chain, clients receive it
 | 21 | `InvalidMemo` | The payout memo is empty or longer than 200 bytes |
 | 22 | `PayoutNotFound` | No payout exists with the given ID for the event |
 | 23 | `TransferToSelf` | A ticket cannot be transferred to its current owner |
+| 24 | `ReceiptAlreadyAttached` | The payout already has a receipt hash attached |
+| 25 | `InvalidReceiptUri` | The receipt URI is longer than 200 bytes |
 
 ## Contributing
 

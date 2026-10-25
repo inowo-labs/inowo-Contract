@@ -2175,3 +2175,182 @@ fn test_tickets_by_owner_on_nonexistent_event_fails() {
         Some(Ok(Error::EventNotFound))
     );
 }
+
+#[test]
+fn test_attach_receipt_records_hash_and_uri_and_publishes_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, contract_id, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let crew = Address::generate(&env);
+    let event_id = ended_event_with_funds(&env, &client, &token_admin, &organizer);
+    let payout_id = client.release_funds(
+        &organizer,
+        &event_id,
+        &crew,
+        &250_000_000_i128,
+        &String::from_str(&env, "Sound crew"),
+    );
+
+    let hash = BytesN::from_array(&env, &[7u8; 32]);
+    let uri = String::from_str(&env, "ipfs://bafy-receipt");
+    client.attach_receipt(&organizer, &event_id, &payout_id, &hash, &Some(uri.clone()));
+    let events = env.events().all().filter_by_contract(&contract_id);
+
+    let payout = client.get_payout(&event_id, &payout_id);
+    assert_eq!(payout.receipt_hash, Some(hash.clone()));
+    assert_eq!(payout.receipt_uri, Some(uri));
+    assert_eq!(
+        events,
+        [ReceiptAttached {
+            event_id,
+            payout_id,
+            receipt_hash: hash,
+        }
+        .to_xdr(&env, &contract_id)]
+    );
+}
+
+#[test]
+fn test_attach_receipt_without_uri_leaves_it_none() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let crew = Address::generate(&env);
+    let event_id = ended_event_with_funds(&env, &client, &token_admin, &organizer);
+    let payout_id = client.release_funds(
+        &organizer,
+        &event_id,
+        &crew,
+        &250_000_000_i128,
+        &String::from_str(&env, "Sound crew"),
+    );
+
+    client.attach_receipt(
+        &organizer,
+        &event_id,
+        &payout_id,
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &None,
+    );
+
+    assert_eq!(client.get_payout(&event_id, &payout_id).receipt_uri, None);
+}
+
+#[test]
+fn test_attach_receipt_twice_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let crew = Address::generate(&env);
+    let event_id = ended_event_with_funds(&env, &client, &token_admin, &organizer);
+    let payout_id = client.release_funds(
+        &organizer,
+        &event_id,
+        &crew,
+        &250_000_000_i128,
+        &String::from_str(&env, "Sound crew"),
+    );
+
+    client.attach_receipt(
+        &organizer,
+        &event_id,
+        &payout_id,
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &None,
+    );
+
+    let result = client.try_attach_receipt(
+        &organizer,
+        &event_id,
+        &payout_id,
+        &BytesN::from_array(&env, &[2u8; 32]),
+        &None,
+    );
+    assert_eq!(result.err(), Some(Ok(Error::ReceiptAlreadyAttached)));
+    // The first hash must survive a rejected second attempt.
+    assert_eq!(
+        client.get_payout(&event_id, &payout_id).receipt_hash,
+        Some(BytesN::from_array(&env, &[1u8; 32]))
+    );
+}
+
+#[test]
+fn test_attach_receipt_by_non_organizer_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let impostor = Address::generate(&env);
+    let crew = Address::generate(&env);
+    let event_id = ended_event_with_funds(&env, &client, &token_admin, &organizer);
+    let payout_id = client.release_funds(
+        &organizer,
+        &event_id,
+        &crew,
+        &250_000_000_i128,
+        &String::from_str(&env, "Sound crew"),
+    );
+
+    let result = client.try_attach_receipt(
+        &impostor,
+        &event_id,
+        &payout_id,
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &None,
+    );
+    assert_eq!(result.err(), Some(Ok(Error::NotOrganizer)));
+}
+
+#[test]
+fn test_attach_receipt_on_missing_payout_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let event_id = ended_event_with_funds(&env, &client, &token_admin, &organizer);
+
+    let result = client.try_attach_receipt(
+        &organizer,
+        &event_id,
+        &0,
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &None,
+    );
+    assert_eq!(result.err(), Some(Ok(Error::PayoutNotFound)));
+}
+
+#[test]
+fn test_attach_receipt_with_uri_too_long_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let crew = Address::generate(&env);
+    let event_id = ended_event_with_funds(&env, &client, &token_admin, &organizer);
+    let payout_id = client.release_funds(
+        &organizer,
+        &event_id,
+        &crew,
+        &250_000_000_i128,
+        &String::from_str(&env, "Sound crew"),
+    );
+
+    let too_long = String::from_bytes(&env, &[b'x'; (MAX_RECEIPT_URI_LEN + 1) as usize]);
+    let result = client.try_attach_receipt(
+        &organizer,
+        &event_id,
+        &payout_id,
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &Some(too_long),
+    );
+    assert_eq!(result.err(), Some(Ok(Error::InvalidReceiptUri)));
+}
