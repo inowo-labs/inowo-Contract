@@ -50,6 +50,7 @@ Inowo is in early development on Stellar testnet. Here is exactly what exists to
 | Release funds | After an event ends, the organizer pays recipients from escrow; each payout is a public record with a memo |
 | Proof of spend | Organizer attaches a SHA-256 receipt hash (and optional URI) to a payout, once, as evidence of what it paid for |
 | Read access | Anyone can query events, tiers, tickets, sponsorships, sponsor totals, balances, and payouts |
+| TypeScript bindings | A generated, typed client in [`bindings/`](./bindings) — every argument, return type, and error code matches the contract, regenerated with `scripts/generate-bindings.sh` |
 
 ### Planned — open for contribution
 
@@ -59,7 +60,6 @@ Inowo is in early development on Stellar testnet. Here is exactly what exists to
 | Funding deadline — anyone can cancel an underfunded event once the deadline passes, opening refunds | Hard | [#31](https://github.com/inowo-labs/inowo-Contract/issues/31) |
 | Property-based tests for escrow accounting invariants | Hard | [#38](https://github.com/inowo-labs/inowo-Contract/issues/38) |
 | Organizer track record — on-chain history of events delivered and funds released | Medium | [#34](https://github.com/inowo-labs/inowo-Contract/issues/34) |
-| TypeScript bindings for the contract | Medium | [#4](https://github.com/inowo-labs/inowo-Contract/issues/4) |
 | Reject events dated in the past | Easy | [#37](https://github.com/inowo-labs/inowo-Contract/issues/37) |
 
 ## Project structure
@@ -81,7 +81,7 @@ All writes — creating events, sponsoring, buying tickets — are signed by the
 | Organizer | Create events, define tiers, check in tickets, end or cancel events, release funds to recipients | Publish budget lines before funding opens |
 | Sponsor | Contribute USDC; view every sponsorship for an event; claim a full refund if the event is cancelled | Refund if the funding goal is missed |
 | Attendee | Buy tickets; prove ownership on-chain; claim a refund if the event is cancelled; transfer an unused ticket to someone else | — |
-| Recipient | Receive payouts from an event's escrow, each with a public memo | Attach proof of spend |
+| Recipient | Receive payouts from an event's escrow, each with a public memo, and have the organizer attach proof of spend | — |
 | Anyone | Read all events, tickets, sponsorships, balances, and payout history | Read organizer track records |
 
 ## Data model
@@ -90,7 +90,7 @@ All writes — creating events, sponsoring, buying tickets — are signed by the
 - **Ticket tier** — a named price level (e.g. General, VIP) with a price and supply cap.
 - **Ticket** — an ownership record linking a buyer's address to an event and tier, with the price paid and redeemed / refunded flags.
 - **Sponsorship** — a contribution recorded against the sponsor's address.
-- **Payout** — a release from escrow: recipient, amount, memo, and timestamp.
+- **Payout** — a release from escrow: recipient, amount, memo, timestamp, and an optional receipt hash + URI once the organizer attaches proof of spend.
 
 All amounts are in USDC stroops: `1 USDC = 10_000_000`.
 
@@ -158,6 +158,16 @@ The deployment is seeded with three demo events covering the full lifecycle:
 | 0 | Lagos Stellar Builders Meetup | `Active` | Two sponsorships and two tickets — open for you to sponsor or buy |
 | 1 | Soroban Smart Contract Workshop | `Ended` | A checked-in ticket and two payouts, to a venue and a crew, each with a memo |
 | 2 | Campus Hack Night | `Cancelled` | A sponsorship and a ticket, both refunded in full |
+
+## TypeScript bindings
+
+[`bindings/`](./bindings) is a generated, typed TypeScript client — every function, type, and error code is produced straight from the contract's spec, so a client-side call can't drift out of sync with an argument order or type the contract actually expects.
+
+```bash
+./scripts/generate-bindings.sh   # regenerates bindings/src/index.ts from the current contract
+```
+
+Never hand-edit `bindings/src/index.ts`; CI regenerates it and fails if the committed output doesn't match. See [`bindings/README.md`](./bindings/README.md) for how to install it and call a read and a write function.
 
 ## Function reference
 

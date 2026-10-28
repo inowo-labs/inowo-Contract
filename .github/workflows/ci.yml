@@ -34,3 +34,47 @@ jobs:
 
       - name: Build WASM
         run: cargo build --target wasm32v1-none --release
+
+  bindings:
+    name: Bindings up to date
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Cache Stellar CLI
+        id: cache-stellar-cli
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/stellar
+          key: stellar-cli-28.1.0-${{ runner.os }}
+
+      - name: Install Stellar CLI
+        if: steps.cache-stellar-cli.outputs.cache-hit != 'true'
+        run: cargo install --locked stellar-cli --version 28.1.0
+
+      - name: Regenerate bindings
+        run: ./scripts/generate-bindings.sh
+
+      - name: Fail if the committed bindings are out of date
+        run: |
+          git diff --exit-code -- bindings/src/index.ts bindings/package.json bindings/README.md bindings/.gitignore || {
+            echo "::error::bindings/ doesn't match the current contract — run ./scripts/generate-bindings.sh and commit the result";
+            exit 1;
+          }
+
+      - name: Install bindings dependencies
+        working-directory: bindings
+        run: npm install
+
+      - name: Build bindings package
+        working-directory: bindings
+        run: npm run build
