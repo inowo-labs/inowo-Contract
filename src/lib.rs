@@ -91,6 +91,22 @@ pub struct Payout {
     pub receipt_uri: Option<String>,
 }
 
+/// An organizer's on-chain track record, updated by every function that
+/// touches money or an event's lifecycle. A public history of delivering
+/// events and handling money well is what earns sponsor trust.
+#[contracttype]
+#[derive(Clone)]
+pub struct OrganizerStats {
+    pub events_created: u32,
+    pub events_ended: u32,
+    pub events_cancelled: u32,
+    /// Total USDC ever contributed (sponsorships + ticket sales) across all
+    /// of this organizer's events, regardless of what happened to it since.
+    pub total_raised: i128,
+    pub total_released: i128,
+    pub total_refunded: i128,
+}
+
 // ─── Errors ───────────────────────────────────────────────────────────────────
 
 /// Error codes are part of the contract's public interface — clients match on
@@ -267,6 +283,11 @@ pub enum DataKey {
     /// transfer for an event — a history, not a live "currently owned" list.
     /// See `get_tickets_by_owner`.
     OwnerTicket(u32, Address, u32),
+    OrganizerStats(Address),
+    OrganizerEventCount(Address),
+    /// One entry per event an organizer has ever created, so the list can
+    /// grow without hitting entry size limits. See `get_organizer_events`.
+    OrganizerEvent(Address, u32),
 }
 
 /// Upper bound on a payout memo, in bytes, to keep payout entries small.
@@ -283,6 +304,10 @@ pub const MAX_OWNER_TICKET_PAGE: u32 = 50;
 /// Most sponsorships `get_sponsorships` returns in one call, regardless of
 /// the requested `limit`, so a page always has a bounded, predictable cost.
 pub const MAX_SPONSORSHIP_PAGE: u32 = 50;
+
+/// Most event IDs `get_organizer_events` returns in one call, regardless of
+/// the requested `limit`, so a page always has a bounded, predictable cost.
+pub const MAX_ORGANIZER_EVENTS_PAGE: u32 = 50;
 
 // ─── Storage helpers ──────────────────────────────────────────────────────────
 
@@ -365,6 +390,40 @@ fn append_owner_ticket(env: &Env, event_id: u32, owner: &Address, ticket_id: u32
         env,
         &DataKey::OwnerTicket(event_id, owner.clone(), index),
         &ticket_id,
+    );
+}
+
+fn load_organizer_stats(env: &Env, organizer: &Address) -> OrganizerStats {
+    env.storage()
+        .persistent()
+        .get(&DataKey::OrganizerStats(organizer.clone()))
+        .unwrap_or(OrganizerStats {
+            events_created: 0,
+            events_ended: 0,
+            events_cancelled: 0,
+            total_raised: 0,
+            total_released: 0,
+            total_refunded: 0,
+        })
+}
+
+fn save_organizer_stats(env: &Env, organizer: &Address, stats: &OrganizerStats) {
+    save(env, &DataKey::OrganizerStats(organizer.clone()), stats);
+}
+
+/// Records that `organizer` created `event_id`, so `get_organizer_events` can
+/// list every event an organizer has ever run.
+fn append_organizer_event(env: &Env, organizer: &Address, event_id: u32) {
+    let index = load_u32(env, &DataKey::OrganizerEventCount(organizer.clone()));
+    save(
+        env,
+        &DataKey::OrganizerEventCount(organizer.clone()),
+        &(index + 1),
+    );
+    save(
+        env,
+        &DataKey::OrganizerEvent(organizer.clone(), index),
+        &event_id,
     );
 }
 
@@ -462,6 +521,11 @@ impl InowoContract {
         save(&env, &DataKey::Tiers(event_id), &tier_list);
         save(&env, &DataKey::TicketCounter(event_id), &0u32);
 
+        let mut stats = load_organizer_stats(&env, &organizer);
+        stats.events_created += 1;
+        save_organizer_stats(&env, &organizer, &stats);
+        append_organizer_event(&env, &organizer, event_id);
+
         EventCreated {
             event_id,
             organizer,
@@ -508,6 +572,10 @@ impl InowoContract {
 
         event.balance += price;
         save(&env, &DataKey::Event(event_id), &event);
+
+        let mut stats = load_organizer_stats(&env, &event.organizer);
+        stats.total_raised += price;
+        save_organizer_stats(&env, &event.organizer, &stats);
 
         let ticket_id: u32 = env
             .storage()
@@ -666,6 +734,10 @@ impl InowoContract {
         event.balance += amount;
         save(&env, &DataKey::Event(event_id), &event);
 
+        let mut stats = load_organizer_stats(&env, &event.organizer);
+        stats.total_raised += amount;
+        save_organizer_stats(&env, &event.organizer, &stats);
+
         Sponsored {
             event_id,
             sponsor,
@@ -690,6 +762,10 @@ impl InowoContract {
 
         event.status = EventStatus::Ended;
         save(&env, &DataKey::Event(event_id), &event);
+
+        let mut stats = load_organizer_stats(&env, &organizer);
+        stats.events_ended += 1;
+        save_organizer_stats(&env, &organizer, &stats);
 
         EventEnded {
             event_id,
@@ -716,6 +792,10 @@ impl InowoContract {
 
         event.status = EventStatus::Cancelled;
         save(&env, &DataKey::Event(event_id), &event);
+
+        let mut stats = load_organizer_stats(&env, &organizer);
+        stats.events_cancelled += 1;
+        save_organizer_stats(&env, &organizer, &stats);
 
         EventCancelled {
             event_id,
@@ -755,6 +835,11 @@ impl InowoContract {
         save(&env, &DataKey::Ticket(event_id, ticket_id), &ticket);
         event.balance -= amount;
         save(&env, &DataKey::Event(event_id), &event);
+
+        let mut stats = load_organizer_stats(&env, &event.organizer);
+        stats.total_refunded += amount;
+        save_organizer_stats(&env, &event.organizer, &stats);
+
         pay_out(&env, &owner, amount)?;
 
         TicketRefunded {
@@ -788,6 +873,11 @@ impl InowoContract {
         );
         event.balance -= amount;
         save(&env, &DataKey::Event(event_id), &event);
+
+        let mut stats = load_organizer_stats(&env, &event.organizer);
+        stats.total_refunded += amount;
+        save_organizer_stats(&env, &event.organizer, &stats);
+
         pay_out(&env, &sponsor, amount)?;
 
         SponsorshipRefunded {
@@ -851,6 +941,11 @@ impl InowoContract {
         );
         event.balance -= amount;
         save(&env, &DataKey::Event(event_id), &event);
+
+        let mut stats = load_organizer_stats(&env, &organizer);
+        stats.total_released += amount;
+        save_organizer_stats(&env, &organizer, &stats);
+
         pay_out(&env, &recipient, amount)?;
 
         FundsReleased {
@@ -962,6 +1057,33 @@ impl InowoContract {
     pub fn owner_ticket_count(env: Env, event_id: u32, owner: Address) -> Result<u32, Error> {
         require_event_exists(&env, event_id)?;
         Ok(load_u32(&env, &DataKey::OwnerTicketCount(event_id, owner)))
+    }
+
+    /// Returns an organizer's on-chain track record. All zeros for an
+    /// address that has never organized anything — there's nothing to
+    /// distinguish "unknown" from "known but zero" worth erroring over.
+    pub fn get_organizer_stats(env: Env, organizer: Address) -> OrganizerStats {
+        load_organizer_stats(&env, &organizer)
+    }
+
+    /// Returns up to `limit` (capped at `MAX_ORGANIZER_EVENTS_PAGE`) event
+    /// IDs `organizer` has ever created, starting at `start`, oldest first.
+    pub fn get_organizer_events(env: Env, organizer: Address, start: u32, limit: u32) -> Vec<u32> {
+        let count = load_u32(&env, &DataKey::OrganizerEventCount(organizer.clone()));
+        let end = start
+            .saturating_add(limit.min(MAX_ORGANIZER_EVENTS_PAGE))
+            .min(count);
+
+        let mut out = Vec::new(&env);
+        for i in start..end {
+            let event_id: u32 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::OrganizerEvent(organizer.clone(), i))
+                .expect("organizer event index within count must exist");
+            out.push_back(event_id);
+        }
+        out
     }
 
     /// Returns how much a sponsor currently has contributed (and not yet been

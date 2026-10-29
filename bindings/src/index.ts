@@ -133,7 +133,7 @@ price_paid: i128;
   tier_index: u32;
 }
 
-export type DataKey = {tag: "Token", values: void} | {tag: "EventCounter", values: void} | {tag: "Event", values: readonly [u32]} | {tag: "Tiers", values: readonly [u32]} | {tag: "TicketCounter", values: readonly [u32]} | {tag: "Ticket", values: readonly [u32, u32]} | {tag: "SponsorshipCount", values: readonly [u32]} | {tag: "Sponsorship", values: readonly [u32, u32]} | {tag: "SponsorTotal", values: readonly [u32, string]} | {tag: "PayoutCounter", values: readonly [u32]} | {tag: "Payout", values: readonly [u32, u32]} | {tag: "TotalReleased", values: readonly [u32]} | {tag: "OwnerTicketCount", values: readonly [u32, string]} | {tag: "OwnerTicket", values: readonly [u32, string, u32]};
+export type DataKey = {tag: "Token", values: void} | {tag: "EventCounter", values: void} | {tag: "Event", values: readonly [u32]} | {tag: "Tiers", values: readonly [u32]} | {tag: "TicketCounter", values: readonly [u32]} | {tag: "Ticket", values: readonly [u32, u32]} | {tag: "SponsorshipCount", values: readonly [u32]} | {tag: "Sponsorship", values: readonly [u32, u32]} | {tag: "SponsorTotal", values: readonly [u32, string]} | {tag: "PayoutCounter", values: readonly [u32]} | {tag: "Payout", values: readonly [u32, u32]} | {tag: "TotalReleased", values: readonly [u32]} | {tag: "OwnerTicketCount", values: readonly [u32, string]} | {tag: "OwnerTicket", values: readonly [u32, string, u32]} | {tag: "OrganizerStats", values: readonly [string]} | {tag: "OrganizerEventCount", values: readonly [string]} | {tag: "OrganizerEvent", values: readonly [string, u32]};
 
 
 /**
@@ -173,6 +173,25 @@ export interface Sponsorship {
 }
 
 
+
+
+/**
+ * An organizer's on-chain track record, updated by every function that
+ * touches money or an event's lifecycle. A public history of delivering
+ * events and handling money well is what earns sponsor trust.
+ */
+export interface OrganizerStats {
+  events_cancelled: u32;
+  events_created: u32;
+  events_ended: u32;
+  /**
+ * Total USDC ever contributed (sponsorships + ticket sales) across all
+ * of this organizer's events, regardless of what happened to it since.
+ */
+total_raised: i128;
+  total_refunded: i128;
+  total_released: i128;
+}
 
 
 
@@ -363,6 +382,21 @@ export interface Client {
   refund_sponsorship: ({sponsor, event_id}: {sponsor: string, event_id: u32}, options?: MethodOptions) => Promise<AssembledTransaction<Result<i128>>>
 
   /**
+   * Construct and simulate a get_organizer_stats transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Returns an organizer's on-chain track record. All zeros for an
+   * address that has never organized anything — there's nothing to
+   * distinguish "unknown" from "known but zero" worth erroring over.
+   */
+  get_organizer_stats: ({organizer}: {organizer: string}, options?: MethodOptions) => Promise<AssembledTransaction<OrganizerStats>>
+
+  /**
+   * Construct and simulate a get_organizer_events transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Returns up to `limit` (capped at `MAX_ORGANIZER_EVENTS_PAGE`) event
+   * IDs `organizer` has ever created, starting at `start`, oldest first.
+   */
+  get_organizer_events: ({organizer, start, limit}: {organizer: string, start: u32, limit: u32}, options?: MethodOptions) => Promise<AssembledTransaction<Array<u32>>>
+
+  /**
    * Construct and simulate a get_tickets_by_owner transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    * Returns up to `limit` (capped at `MAX_OWNER_TICKET_PAGE`) ticket IDs
    * `owner` has bought or received by transfer, starting at `start`.
@@ -416,8 +450,10 @@ export class Client extends ContractClient {
         "AAAAAAAAAHZPcmdhbml6ZXIgY2xvc2VzIGFuIGV2ZW50LCBwcmV2ZW50aW5nIGZ1cnRoZXIgdGlja2V0IHNhbGVzIGFuZCBzcG9uc29yc2hpcHMuClN0YXR1cyB0cmFuc2l0aW9ucyBmcm9tIEFjdGl2ZSDihpIgRW5kZWQuAAAAAAAJZW5kX2V2ZW50AAAAAAAAAgAAAAAAAAAJb3JnYW5pemVyAAAAAAAAEwAAAAAAAAAIZXZlbnRfaWQAAAAEAAAAAQAAA+kAAAACAAAAAw==",
         "AAAAAAAAAI9SdW5zIG9uY2UsIGF0b21pY2FsbHkgd2l0aCBkZXBsb3ltZW50OiByZWNvcmRzIHRoZSBVU0RDIHRva2VuIGNvbnRyYWN0CmFkZHJlc3MuIERvaW5nIHRoaXMgaW4gdGhlIGNvbnN0cnVjdG9yIG1lYW5zIG5vIG9uZSBjYW4gZnJvbnQtcnVuIHNldHVwLgAAAAANX19jb25zdHJ1Y3RvcgAAAAAAAAEAAAAAAAAABXRva2VuAAAAAAAAEwAAAAA=",
         "AAAAAAAAAIdSZXR1cm5zIGhvdyBtYW55IHRpY2tldHMgYG93bmVyYCBoYXMgZXZlciBib3VnaHQgb3IgcmVjZWl2ZWQgYnkKdHJhbnNmZXIgZm9yIGFuIGV2ZW50IChzZWUgYGdldF90aWNrZXRzX2J5X293bmVyYCBmb3Igd2hhdCB0aGF0IG1lYW5zKS4AAAAAEm93bmVyX3RpY2tldF9jb3VudAAAAAAAAgAAAAAAAAAIZXZlbnRfaWQAAAAEAAAAAAAAAAVvd25lcgAAAAAAABMAAAABAAAD6QAAAAQAAAAD",
+        "AAAAAAAAAIhSZXR1cm5zIHVwIHRvIGBsaW1pdGAgKGNhcHBlZCBhdCBgTUFYX09SR0FOSVpFUl9FVkVOVFNfUEFHRWApIGV2ZW50CklEcyBgb3JnYW5pemVyYCBoYXMgZXZlciBjcmVhdGVkLCBzdGFydGluZyBhdCBgc3RhcnRgLCBvbGRlc3QgZmlyc3QuAAAAFGdldF9vcmdhbml6ZXJfZXZlbnRzAAAAAwAAAAAAAAAJb3JnYW5pemVyAAAAAAAAEwAAAAAAAAAFc3RhcnQAAAAAAAAEAAAAAAAAAAVsaW1pdAAAAAAAAAQAAAABAAAD6gAAAAQ=",
         "AAAAAAAAAItSZXR1cm5zIHRoZSB0b3RhbCBVU0RDIHJlbGVhc2VkIGZyb20gYW4gZXZlbnQncyBlc2Nyb3cuIFRvZ2V0aGVyIHdpdGgKYGdldF9iYWxhbmNlYCwgdGhpcyBzaG93cyBob3cgbXVjaCB3YXMgcmFpc2VkIGFuZCBob3cgbXVjaCB3YXMgc3BlbnQuAAAAAA50b3RhbF9yZWxlYXNlZAAAAAAAAQAAAAAAAAAIZXZlbnRfaWQAAAAEAAAAAQAAA+kAAAALAAAAAw==",
         "AAAAAAAAAL9SZXR1cm5zIHVwIHRvIGBsaW1pdGAgc3BvbnNvcnNoaXBzIChjYXBwZWQgYXQgYE1BWF9TUE9OU09SU0hJUF9QQUdFYCkKc3RhcnRpbmcgYXQgYHN0YXJ0YCwgb3JkZXJlZCBieSB0aGUgdGltZSB0aGV5IHdlcmUgbWFkZS4gYHN0YXJ0YCBwYXN0CnRoZSBlbmQgcmV0dXJucyBhbiBlbXB0eSBwYWdlIHJhdGhlciB0aGFuIGFuIGVycm9yLgAAAAAQZ2V0X3Nwb25zb3JzaGlwcwAAAAMAAAAAAAAACGV2ZW50X2lkAAAABAAAAAAAAAAFc3RhcnQAAAAAAAAEAAAAAAAAAAVsaW1pdAAAAAAAAAQAAAABAAAD6QAAA+oAAAfQAAAAC1Nwb25zb3JzaGlwAAAAAAM=",
+        "AAAAAAAAAMBSZXR1cm5zIGFuIG9yZ2FuaXplcidzIG9uLWNoYWluIHRyYWNrIHJlY29yZC4gQWxsIHplcm9zIGZvciBhbgphZGRyZXNzIHRoYXQgaGFzIG5ldmVyIG9yZ2FuaXplZCBhbnl0aGluZyDigJQgdGhlcmUncyBub3RoaW5nIHRvCmRpc3Rpbmd1aXNoICJ1bmtub3duIiBmcm9tICJrbm93biBidXQgemVybyIgd29ydGggZXJyb3Jpbmcgb3Zlci4AAAATZ2V0X29yZ2FuaXplcl9zdGF0cwAAAAABAAAAAAAAAAlvcmdhbml6ZXIAAAAAAAATAAAAAQAAB9AAAAAOT3JnYW5pemVyU3RhdHMAAA==",
         "AAAAAAAAAMtPcmdhbml6ZXIgYXR0YWNoZXMgYSByZWNlaXB0IGhhc2ggKGFuZCBvcHRpb25hbGx5IHdoZXJlIHRvIGZpbmQgdGhlCmRvY3VtZW50IGl0c2VsZikgdG8gYSBwYXlvdXQgYXMgcHJvb2Ygb2Ygc3BlbmQuIFNldHRhYmxlIG9ubHkgb25jZQpwZXIgcGF5b3V0IOKAlCBhIHJlY2VpcHQgaXMgZXZpZGVuY2UsIG5vdCBzb21ldGhpbmcgdG8gcmV2aXNlIGxhdGVyLgAAAAAOYXR0YWNoX3JlY2VpcHQAAAAAAAUAAAAAAAAACW9yZ2FuaXplcgAAAAAAABMAAAAAAAAACGV2ZW50X2lkAAAABAAAAAAAAAAJcGF5b3V0X2lkAAAAAAAABAAAAAAAAAAMcmVjZWlwdF9oYXNoAAAD7gAAACAAAAAAAAAAC3JlY2VpcHRfdXJpAAAAA+gAAAAQAAAAAQAAA+kAAAACAAAAAw==",
         "AAAAAAAAANhUaWNrZXQgb3duZXIgY2xhaW1zIGJhY2sgdGhlIHByaWNlIHBhaWQgZm9yIGEgdGlja2V0IHRvIGEgY2FuY2VsbGVkIGV2ZW50LgoKUmVmdW5kcyBhcmUgcHVsbGVkIGJ5IGVhY2ggaG9sZGVyIHJhdGhlciB0aGFuIHB1c2hlZCBieSB0aGUgb3JnYW5pemVyLApzbyBjYW5jZWxsaW5nIG5ldmVyIGhhcyB0byBsb29wIG92ZXIgZXZlcnkgdGlja2V0IGluIG9uZSB0cmFuc2FjdGlvbi4AAAANcmVmdW5kX3RpY2tldAAAAAAAAAMAAAAAAAAABW93bmVyAAAAAAAAEwAAAAAAAAAIZXZlbnRfaWQAAAAEAAAAAAAAAAl0aWNrZXRfaWQAAAAAAAAEAAAAAQAAA+kAAAALAAAAAw==",
         "AAAAAAAAANpPcmdhbml6ZXIgcmVsZWFzZXMgZXNjcm93ZWQgZnVuZHMgdG8gYSByZWNpcGllbnQgKGEgd29ya2VyLCB2ZW5kb3IsIG9yCnZlbnVlKSBhZnRlciB0aGUgZXZlbnQgaGFzIGVuZGVkLiBFdmVyeSByZWxlYXNlIGlzIHN0b3JlZCBhcyBhIHB1YmxpYwpwYXlvdXQgcmVjb3JkIHdpdGggYSBtZW1vIGV4cGxhaW5pbmcgd2hhdCBpdCBwYXlzIGZvci4KUmV0dXJucyB0aGUgcGF5b3V0IElELgAAAAAADXJlbGVhc2VfZnVuZHMAAAAAAAAFAAAAAAAAAAlvcmdhbml6ZXIAAAAAAAATAAAAAAAAAAhldmVudF9pZAAAAAQAAAAAAAAACXJlY2lwaWVudAAAAAAAABMAAAAAAAAABmFtb3VudAAAAAAACwAAAAAAAAAEbWVtbwAAABAAAAABAAAD6QAAAAQAAAAD",
@@ -430,7 +466,8 @@ export class Client extends ContractClient {
         "AAAAAQAAAD9TdG9yZWQgc3RhdGUgZm9yIGEgdGlja2V0IHRpZXIsIGV4dGVuZGVkIHdpdGggbGl2ZSBzYWxlcyBjb3VudC4AAAAAAAAAAApUaWNrZXRUaWVyAAAAAAAEAAAAAAAAAARuYW1lAAAAEAAAAAAAAAAFcHJpY2UAAAAAAAALAAAAAAAAAApzdXBwbHlfY2FwAAAAAAAEAAAAAAAAAAx0aWNrZXRzX3NvbGQAAAAE",
         "AAAAAQAAADVJbnB1dCBzaGFwZSBmb3IgYSB0aWNrZXQgdGllciB3aGVuIGNyZWF0aW5nIGFuIGV2ZW50LgAAAAAAAAAAAAAJVGllcklucHV0AAAAAAAAAwAAAAAAAAAEbmFtZQAAABAAAAAsUHJpY2UgaW4gVVNEQyBzdHJvb3BzICgxIFVTREMgPSAxMF8wMDBfMDAwKS4AAAAFcHJpY2UAAAAAAAALAAAAAAAAAApzdXBwbHlfY2FwAAAAAAAE",
         "AAAAAQAAADlBIHB1YmxpYyByZWNvcmQgb2YgZnVuZHMgcmVsZWFzZWQgZnJvbSBhbiBldmVudCdzIGVzY3Jvdy4AAAAAAAAAAAAABlBheW91dAAAAAAABgAAAAAAAAAGYW1vdW50AAAAAAALAAAAgVdoYXQgdGhlIHBheW91dCBpcyBmb3IsIGUuZy4gIlNvdW5kIGNyZXciIOKAlCByZXF1aXJlZCBzbyBldmVyeQpkaXNidXJzZW1lbnQgZXhwbGFpbnMgaXRzZWxmIG5leHQgdG8gdGhlIGNvbnRyaWJ1dGlvbnMgaXQgc3BlbmRzLgAAAAAAAARtZW1vAAAAEAAAAIFTSEEtMjU2IG9mIGEgcmVjZWlwdCBkb2N1bWVudCBwcm92aW5nIHdoYXQgdGhlIHBheW91dCB3YXMgc3BlbnQgb24uClNldHRhYmxlIG9uY2UgdmlhIGBhdHRhY2hfcmVjZWlwdGAsIGFmdGVyIHRoZSBwYXlvdXQgaXMgbWFkZS4AAAAAAAAMcmVjZWlwdF9oYXNoAAAD6AAAA+4AAAAgAAAAg1doZXJlIHRvIGZpbmQgdGhlIHJlY2VpcHQgZG9jdW1lbnQgaXRzZWxmLCBlLmcuIGFuIElQRlMgQ0lELiBUaGUgaGFzaAphYm92ZSBpcyB3aGF0IHByb3ZlcyBpdCBtYXRjaGVzOyB0aGlzIGlzIGp1c3QgaG93IHRvIGZpbmQgaXQuAAAAAAtyZWNlaXB0X3VyaQAAAAPoAAAAEAAAAAAAAAAJcmVjaXBpZW50AAAAAAAAEwAAACBMZWRnZXIgdGltZXN0YW1wIG9mIHRoZSByZWxlYXNlLgAAAAl0aW1lc3RhbXAAAAAAAAAG",
-        "AAAAAgAAAAAAAAAAAAAAB0RhdGFLZXkAAAAADgAAAAAAAAAAAAAABVRva2VuAAAAAAAAAAAAAAAAAAAMRXZlbnRDb3VudGVyAAAAAQAAAAAAAAAFRXZlbnQAAAAAAAABAAAABAAAAAEAAAAAAAAABVRpZXJzAAAAAAAAAQAAAAQAAAABAAAAAAAAAA1UaWNrZXRDb3VudGVyAAAAAAAAAQAAAAQAAAABAAAAAAAAAAZUaWNrZXQAAAAAAAIAAAAEAAAABAAAAAEAAAAAAAAAEFNwb25zb3JzaGlwQ291bnQAAAABAAAABAAAAAEAAACRT25lIGVudHJ5IHBlciBjb250cmlidXRpb24gc28gdGhlIHB1YmxpYyBoaXN0b3J5IGNhbiBncm93IHdpdGhvdXQgYQpzaW5nbGUgc3RvcmFnZSBlbnRyeSBoaXR0aW5nIFNvcm9iYW4ncyBzaXplIGxpbWl0IChzZWUgTUFYX1NQT05TT1JTSElQX1BBR0UpLgAAAAAAAAtTcG9uc29yc2hpcAAAAAACAAAABAAAAAQAAAABAAAAT1J1bm5pbmcgdG90YWwgYSBzcG9uc29yIGhhcyBjb250cmlidXRlZCB0byBhbiBldmVudCwgb3dlZCBiYWNrIG9uIGNhbmNlbGxhdGlvbi4AAAAADFNwb25zb3JUb3RhbAAAAAIAAAAEAAAAEwAAAAEAAAAAAAAADVBheW91dENvdW50ZXIAAAAAAAABAAAABAAAAAEAAABPT25lIGVudHJ5IHBlciBwYXlvdXQgc28gdGhlIGhpc3RvcnkgY2FuIGdyb3cgd2l0aG91dCBoaXR0aW5nIGVudHJ5IHNpemUgbGltaXRzLgAAAAAGUGF5b3V0AAAAAAACAAAABAAAAAQAAAABAAAAAAAAAA1Ub3RhbFJlbGVhc2VkAAAAAAAAAQAAAAQAAAABAAAAAAAAABBPd25lclRpY2tldENvdW50AAAAAgAAAAQAAAATAAAAAQAAAKJPbmUgZW50cnkgcGVyIHRpY2tldCBhbiBhZGRyZXNzIGhhcyBldmVyIGJvdWdodCBvciByZWNlaXZlZCBieQp0cmFuc2ZlciBmb3IgYW4gZXZlbnQg4oCUIGEgaGlzdG9yeSwgbm90IGEgbGl2ZSAiY3VycmVudGx5IG93bmVkIiBsaXN0LgpTZWUgYGdldF90aWNrZXRzX2J5X293bmVyYC4AAAAAAAtPd25lclRpY2tldAAAAAADAAAABAAAABMAAAAE",
+        "AAAAAQAAAMZBbiBvcmdhbml6ZXIncyBvbi1jaGFpbiB0cmFjayByZWNvcmQsIHVwZGF0ZWQgYnkgZXZlcnkgZnVuY3Rpb24gdGhhdAp0b3VjaGVzIG1vbmV5IG9yIGFuIGV2ZW50J3MgbGlmZWN5Y2xlLiBBIHB1YmxpYyBoaXN0b3J5IG9mIGRlbGl2ZXJpbmcKZXZlbnRzIGFuZCBoYW5kbGluZyBtb25leSB3ZWxsIGlzIHdoYXQgZWFybnMgc3BvbnNvciB0cnVzdC4AAAAAAAAAAAAOT3JnYW5pemVyU3RhdHMAAAAAAAYAAAAAAAAAEGV2ZW50c19jYW5jZWxsZWQAAAAEAAAAAAAAAA5ldmVudHNfY3JlYXRlZAAAAAAABAAAAAAAAAAMZXZlbnRzX2VuZGVkAAAABAAAAIlUb3RhbCBVU0RDIGV2ZXIgY29udHJpYnV0ZWQgKHNwb25zb3JzaGlwcyArIHRpY2tldCBzYWxlcykgYWNyb3NzIGFsbApvZiB0aGlzIG9yZ2FuaXplcidzIGV2ZW50cywgcmVnYXJkbGVzcyBvZiB3aGF0IGhhcHBlbmVkIHRvIGl0IHNpbmNlLgAAAAAAAAx0b3RhbF9yYWlzZWQAAAALAAAAAAAAAA50b3RhbF9yZWZ1bmRlZAAAAAAACwAAAAAAAAAOdG90YWxfcmVsZWFzZWQAAAAAAAs=",
+        "AAAAAgAAAAAAAAAAAAAAB0RhdGFLZXkAAAAAEQAAAAAAAAAAAAAABVRva2VuAAAAAAAAAAAAAAAAAAAMRXZlbnRDb3VudGVyAAAAAQAAAAAAAAAFRXZlbnQAAAAAAAABAAAABAAAAAEAAAAAAAAABVRpZXJzAAAAAAAAAQAAAAQAAAABAAAAAAAAAA1UaWNrZXRDb3VudGVyAAAAAAAAAQAAAAQAAAABAAAAAAAAAAZUaWNrZXQAAAAAAAIAAAAEAAAABAAAAAEAAAAAAAAAEFNwb25zb3JzaGlwQ291bnQAAAABAAAABAAAAAEAAACRT25lIGVudHJ5IHBlciBjb250cmlidXRpb24gc28gdGhlIHB1YmxpYyBoaXN0b3J5IGNhbiBncm93IHdpdGhvdXQgYQpzaW5nbGUgc3RvcmFnZSBlbnRyeSBoaXR0aW5nIFNvcm9iYW4ncyBzaXplIGxpbWl0IChzZWUgTUFYX1NQT05TT1JTSElQX1BBR0UpLgAAAAAAAAtTcG9uc29yc2hpcAAAAAACAAAABAAAAAQAAAABAAAAT1J1bm5pbmcgdG90YWwgYSBzcG9uc29yIGhhcyBjb250cmlidXRlZCB0byBhbiBldmVudCwgb3dlZCBiYWNrIG9uIGNhbmNlbGxhdGlvbi4AAAAADFNwb25zb3JUb3RhbAAAAAIAAAAEAAAAEwAAAAEAAAAAAAAADVBheW91dENvdW50ZXIAAAAAAAABAAAABAAAAAEAAABPT25lIGVudHJ5IHBlciBwYXlvdXQgc28gdGhlIGhpc3RvcnkgY2FuIGdyb3cgd2l0aG91dCBoaXR0aW5nIGVudHJ5IHNpemUgbGltaXRzLgAAAAAGUGF5b3V0AAAAAAACAAAABAAAAAQAAAABAAAAAAAAAA1Ub3RhbFJlbGVhc2VkAAAAAAAAAQAAAAQAAAABAAAAAAAAABBPd25lclRpY2tldENvdW50AAAAAgAAAAQAAAATAAAAAQAAAKJPbmUgZW50cnkgcGVyIHRpY2tldCBhbiBhZGRyZXNzIGhhcyBldmVyIGJvdWdodCBvciByZWNlaXZlZCBieQp0cmFuc2ZlciBmb3IgYW4gZXZlbnQg4oCUIGEgaGlzdG9yeSwgbm90IGEgbGl2ZSAiY3VycmVudGx5IG93bmVkIiBsaXN0LgpTZWUgYGdldF90aWNrZXRzX2J5X293bmVyYC4AAAAAAAtPd25lclRpY2tldAAAAAADAAAABAAAABMAAAAEAAAAAQAAAAAAAAAOT3JnYW5pemVyU3RhdHMAAAAAAAEAAAATAAAAAQAAAAAAAAATT3JnYW5pemVyRXZlbnRDb3VudAAAAAABAAAAEwAAAAEAAACGT25lIGVudHJ5IHBlciBldmVudCBhbiBvcmdhbml6ZXIgaGFzIGV2ZXIgY3JlYXRlZCwgc28gdGhlIGxpc3QgY2FuCmdyb3cgd2l0aG91dCBoaXR0aW5nIGVudHJ5IHNpemUgbGltaXRzLiBTZWUgYGdldF9vcmdhbml6ZXJfZXZlbnRzYC4AAAAAAA5Pcmdhbml6ZXJFdmVudAAAAAAAAgAAABMAAAAE",
         "AAAAAgAAAAAAAAAAAAAAC0V2ZW50U3RhdHVzAAAAAAMAAAAAAAAAAAAAAAZBY3RpdmUAAAAAAAAAAAAAAAAABUVuZGVkAAAAAAAAAAAAAAAAAAAJQ2FuY2VsbGVkAAAA",
         "AAAABAAAAIxFcnJvciBjb2RlcyBhcmUgcGFydCBvZiB0aGUgY29udHJhY3QncyBwdWJsaWMgaW50ZXJmYWNlIOKAlCBjbGllbnRzIG1hdGNoIG9uCnRoZSBudW1lcmljIHZhbHVlLCBzbyBuZXZlciByZW51bWJlciBvciByZXVzZSBhbiBleGlzdGluZyBjb2RlLgAAAAAAAAAFRXJyb3IAAAAAAAAZAAAAR1Jlc2VydmVkOiBzZXR1cCBub3cgaGFwcGVucyBpbiB0aGUgY29uc3RydWN0b3IsIHdoaWNoIGNhbm5vdCBydW4gdHdpY2UuAAAAABJBbHJlYWR5SW5pdGlhbGl6ZWQAAAAAAAEAAAAAAAAADk5vdEluaXRpYWxpemVkAAAAAAACAAAAAAAAAA1FdmVudE5vdEZvdW5kAAAAAAAAAwAAAAAAAAAOVGlja2V0Tm90Rm91bmQAAAAAAAQAAAAAAAAADE5vdE9yZ2FuaXplcgAAAAUAAAAAAAAADkV2ZW50Tm90QWN0aXZlAAAAAAAGAAAAAAAAAAdOb1RpZXJzAAAAAAcAAAAAAAAAEkludmFsaWRGdW5kaW5nR29hbAAAAAAACAAAAAAAAAAQSW52YWxpZFRpZXJQcmljZQAAAAkAAAAAAAAAEEludmFsaWRTdXBwbHlDYXAAAAAKAAAAAAAAAAtJbnZhbGlkVGllcgAAAAALAAAAAAAAAAtUaWVyU29sZE91dAAAAAAMAAAAAAAAAA9BbHJlYWR5UmVkZWVtZWQAAAAADQAAAAAAAAANSW52YWxpZEFtb3VudAAAAAAAAA4AAAAAAAAAEUV2ZW50Tm90Q2FuY2VsbGVkAAAAAAAADwAAAAAAAAAOTm90VGlja2V0T3duZXIAAAAAABAAAAAAAAAAD0FscmVhZHlSZWZ1bmRlZAAAAAARAAAAAAAAAA9Ob3RoaW5nVG9SZWZ1bmQAAAAAEgAAAAAAAAANRXZlbnROb3RFbmRlZAAAAAAAABMAAAAAAAAAEUluc3VmZmljaWVudEZ1bmRzAAAAAAAAFAAAAAAAAAALSW52YWxpZE1lbW8AAAAAFQAAAAAAAAAOUGF5b3V0Tm90Rm91bmQAAAAAABYAAAAAAAAADlRyYW5zZmVyVG9TZWxmAAAAAAAXAAAAAAAAABZSZWNlaXB0QWxyZWFkeUF0dGFjaGVkAAAAAAAYAAAAAAAAABFJbnZhbGlkUmVjZWlwdFVyaQAAAAAAABk=",
         "AAAABQAAAAAAAAAAAAAACVNwb25zb3JlZAAAAAAAAAEAAAAJc3BvbnNvcmVkAAAAAAAAAwAAAAAAAAAIZXZlbnRfaWQAAAAEAAAAAQAAAAAAAAAHc3BvbnNvcgAAAAATAAAAAQAAAAAAAAAGYW1vdW50AAAAAAALAAAAAAAAAAI=",
@@ -475,6 +512,8 @@ export class Client extends ContractClient {
         get_sponsor_total: this.txFromJSON<Result<i128>>,
         owner_ticket_count: this.txFromJSON<Result<u32>>,
         refund_sponsorship: this.txFromJSON<Result<i128>>,
+        get_organizer_stats: this.txFromJSON<OrganizerStats>,
+        get_organizer_events: this.txFromJSON<Array<u32>>,
         get_tickets_by_owner: this.txFromJSON<Result<Array<u32>>>
   }
 }
