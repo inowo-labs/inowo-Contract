@@ -22,4 +22,10 @@ cp scripts/templates/bindings-package.json bindings/package.json
 cp scripts/templates/bindings-readme.md bindings/README.md
 cp scripts/templates/bindings-gitignore.txt bindings/.gitignore
 
+# The CLI's internal ordering of the ContractSpec array isn't guaranteed
+# stable across platforms (seen in practice: Windows vs. CI's Linux build
+# producing the same entries in a different order). Canonicalize it so
+# CI's diff check only fails on an actual content change.
+node scripts/sort-bindings-spec.mjs
+
 echo "Regenerated bindings/ from the current contract." >&2
