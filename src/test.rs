@@ -2354,3 +2354,115 @@ fn test_attach_receipt_with_uri_too_long_fails() {
     );
     assert_eq!(result.err(), Some(Ok(Error::InvalidReceiptUri)));
 }
+
+#[test]
+fn test_organizer_stats_are_all_zero_for_an_unknown_organizer() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, client) = setup(&env);
+    let stranger = Address::generate(&env);
+
+    let stats = client.get_organizer_stats(&stranger);
+    assert_eq!(stats.events_created, 0);
+    assert_eq!(stats.events_ended, 0);
+    assert_eq!(stats.events_cancelled, 0);
+    assert_eq!(stats.total_raised, 0);
+    assert_eq!(stats.total_released, 0);
+    assert_eq!(stats.total_refunded, 0);
+
+    assert_eq!(client.get_organizer_events(&stranger, &0, &50).len(), 0);
+}
+
+#[test]
+fn test_organizer_stats_match_a_mixed_lifecycle_of_ended_and_cancelled_events() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+
+    // Event A: ended, with a partial payout released from escrow.
+    let event_a = ended_event_with_funds(&env, &client, &token_admin, &organizer);
+    client.release_funds(
+        &organizer,
+        &event_a,
+        &Address::generate(&env),
+        &400_000_000_i128,
+        &String::from_str(&env, "Venue hire"),
+    );
+
+    // Event B: cancelled, with both the sponsor and the ticket holder refunded.
+    let sponsor_b = Address::generate(&env);
+    let buyer_b = Address::generate(&env);
+    token_admin.mint(&sponsor_b, &300_000_000_i128);
+    token_admin.mint(&buyer_b, &10_000_000_i128);
+    let event_b = create_test_event(&env, &client, &organizer);
+    client.sponsor_event(&sponsor_b, &event_b, &300_000_000_i128);
+    let ticket_b = client.buy_ticket(&buyer_b, &event_b, &0);
+    client.cancel_event(&organizer, &event_b);
+    client.refund_ticket(&buyer_b, &event_b, &ticket_b);
+    client.refund_sponsorship(&sponsor_b, &event_b);
+
+    let stats = client.get_organizer_stats(&organizer);
+    assert_eq!(stats.events_created, 2);
+    assert_eq!(stats.events_ended, 1);
+    assert_eq!(stats.events_cancelled, 1);
+    // Event A raised 610_000_000 (600m sponsor + 10m ticket); event B raised
+    // 310_000_000 (300m sponsor + 10m ticket).
+    assert_eq!(stats.total_raised, 610_000_000 + 310_000_000);
+    assert_eq!(stats.total_released, 400_000_000);
+    assert_eq!(stats.total_refunded, 300_000_000 + 10_000_000);
+
+    let events = client.get_organizer_events(&organizer, &0, &50);
+    assert_eq!(events, vec![&env, event_a, event_b]);
+}
+
+#[test]
+fn test_get_organizer_events_pagination_bounds() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    for _ in 0..3 {
+        create_test_event(&env, &client, &organizer);
+    }
+
+    assert_eq!(client.get_organizer_events(&organizer, &0, &2).len(), 2);
+    assert_eq!(client.get_organizer_events(&organizer, &2, &2).len(), 1);
+    assert_eq!(client.get_organizer_events(&organizer, &3, &2).len(), 0);
+    assert_eq!(client.get_organizer_events(&organizer, &10, &2).len(), 0);
+}
+
+#[test]
+fn test_get_organizer_events_limit_is_capped_at_max_page() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    for _ in 0..(MAX_ORGANIZER_EVENTS_PAGE + 10) {
+        create_test_event(&env, &client, &organizer);
+    }
+
+    let page = client.get_organizer_events(&organizer, &0, &(MAX_ORGANIZER_EVENTS_PAGE + 10));
+    assert_eq!(page.len(), MAX_ORGANIZER_EVENTS_PAGE);
+}
+
+#[test]
+fn test_organizer_stats_are_kept_separately_per_organizer() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, client) = setup(&env);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+
+    create_test_event(&env, &client, &alice);
+    create_test_event(&env, &client, &bob);
+    create_test_event(&env, &client, &bob);
+
+    assert_eq!(client.get_organizer_stats(&alice).events_created, 1);
+    assert_eq!(client.get_organizer_stats(&bob).events_created, 2);
+}

@@ -51,6 +51,7 @@ Inowo is in early development on Stellar testnet. Here is exactly what exists to
 | Proof of spend | Organizer attaches a SHA-256 receipt hash (and optional URI) to a payout, once, as evidence of what it paid for |
 | Read access | Anyone can query events, tiers, tickets, sponsorships, sponsor totals, balances, and payouts |
 | TypeScript bindings | A generated, typed client in [`bindings/`](./bindings) — every argument, return type, and error code matches the contract, regenerated with `scripts/generate-bindings.sh` |
+| Organizer track record | On-chain stats per organizer (events created/ended/cancelled, total raised/released/refunded) and a paginated list of every event they've created |
 
 ### Planned — open for contribution
 
@@ -58,8 +59,6 @@ Inowo is in early development on Stellar testnet. Here is exactly what exists to
 |---------|------------|-------|
 | Budget lines — organizer publishes planned spending per recipient before funding opens; releases are restricted to it | Hard | [#32](https://github.com/inowo-labs/inowo-Contract/issues/32) |
 | Funding deadline — anyone can cancel an underfunded event once the deadline passes, opening refunds | Hard | [#31](https://github.com/inowo-labs/inowo-Contract/issues/31) |
-| Property-based tests for escrow accounting invariants | Hard | [#38](https://github.com/inowo-labs/inowo-Contract/issues/38) |
-| Organizer track record — on-chain history of events delivered and funds released | Medium | [#34](https://github.com/inowo-labs/inowo-Contract/issues/34) |
 | Reject events dated in the past | Easy | [#37](https://github.com/inowo-labs/inowo-Contract/issues/37) |
 
 ## Project structure
@@ -82,7 +81,7 @@ All writes — creating events, sponsoring, buying tickets — are signed by the
 | Sponsor | Contribute USDC; view every sponsorship for an event; claim a full refund if the event is cancelled | Refund if the funding goal is missed |
 | Attendee | Buy tickets; prove ownership on-chain; claim a refund if the event is cancelled; transfer an unused ticket to someone else | — |
 | Recipient | Receive payouts from an event's escrow, each with a public memo, and have the organizer attach proof of spend | — |
-| Anyone | Read all events, tickets, sponsorships, balances, and payout history | Read organizer track records |
+| Anyone | Read all events, tickets, sponsorships, balances, payout history, and every organizer's track record | — |
 
 ## Data model
 
@@ -91,6 +90,7 @@ All writes — creating events, sponsoring, buying tickets — are signed by the
 - **Ticket** — an ownership record linking a buyer's address to an event and tier, with the price paid and redeemed / refunded flags.
 - **Sponsorship** — a contribution recorded against the sponsor's address.
 - **Payout** — a release from escrow: recipient, amount, memo, timestamp, and an optional receipt hash + URI once the organizer attaches proof of spend.
+- **OrganizerStats** — per organizer: events created/ended/cancelled, and total USDC raised/released/refunded across every event they've run.
 
 All amounts are in USDC stroops: `1 USDC = 10_000_000`.
 
@@ -209,6 +209,8 @@ Never hand-edit `bindings/src/index.ts`; CI regenerates it and fails if the comm
 | `ticket_count` | `event_id: u32` | `u32` | Tickets sold for an event |
 | `sponsor_count` | `event_id: u32` | `u32` | Sponsorship contributions for an event |
 | `tier_count` | `event_id: u32` | `u32` | Ticket tiers for an event |
+| `get_organizer_stats` | `organizer: Address` | `OrganizerStats` | An organizer's on-chain track record; all zeros for an address that has never organized anything |
+| `get_organizer_events` | `organizer: Address, start: u32, limit: u32` | `Vec<u32>` | Event IDs `organizer` has ever created, oldest first; capped at `MAX_ORGANIZER_EVENTS_PAGE` (50) |
 
 ### Events
 
