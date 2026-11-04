@@ -14,9 +14,9 @@ All USDC for an event lives in the contract, not in the organizer's wallet. Mone
               end_event (organizer)
    ┌────────┐ ───────────────────────────▶ ┌───────┐
    │ Active │                              │ Ended │   release_funds
-   └────────┘ ───────────────────┐         └───────┘   (organizer)
-        create_event             │ cancel_event
-                                 ▼ (organizer)
+   └────────┘ ──────────┬──────────────┐   └───────┘   (organizer)
+        create_event    │ cancel_event │ expire_event
+                        ▼ (organizer)  ▼ (anyone, past the funding deadline)
                             ┌───────────┐
                             │ Cancelled │   refund_ticket / refund_sponsorship
                             └───────────┘   (each claimant)
@@ -31,6 +31,7 @@ All USDC for an event lives in the contract, not in the organizer's wallet. Mone
 | `redeem_ticket` | organizer | ✅ | ✅ | ❌ |
 | `end_event` | organizer | ✅ | ❌ | ❌ |
 | `cancel_event` | organizer | ✅ | ❌ | ❌ |
+| `expire_event` | anyone, past `funding_deadline` with the goal unmet | ✅ | ❌ | ❌ |
 | `release_funds` | organizer | ❌ | ✅ | ❌ |
 | `refund_ticket` | ticket owner | ❌ | ❌ | ✅ |
 | `refund_sponsorship` | sponsor | ❌ | ❌ | ✅ |
@@ -67,7 +68,7 @@ There is **no admin, owner, pause switch, or upgrade function.** Nobody — incl
 | Key | Storage | Holds |
 |---|---|---|
 | `Token`, `EventCounter` | instance | the USDC token address (set once, in the constructor) and the number of events |
-| `Event(id)` | persistent | organizer, metadata, goal, escrow `balance`, `status` |
+| `Event(id)` | persistent | organizer, metadata, goal, funding deadline, escrow `balance`, `status` |
 | `Tiers(id)` | persistent | tiers with price, cap, and tickets sold |
 | `TicketCounter(id)`, `Ticket(id, n)` | persistent | one entry per ticket: owner, tier, `price_paid`, `redeemed`, `refunded` |
 | `SponsorshipCount(id)`, `Sponsorship(id, n)` | persistent | one entry per contribution, so a flood of tiny sponsorships can't grow a single entry past Soroban's size limit |
@@ -93,12 +94,10 @@ Every state change emits a contract event (see the Events table in the README), 
 
 These are real, they are tracked as issues, and a few are the project's most important next steps.
 
-1. **The organizer decides who gets paid.** After an event ends, `release_funds` can pay *any* address up to the escrow balance. An organizer can also end an event immediately after collecting sponsorships — even before its date — and release everything to themselves. Nothing today ties payouts to a promised budget. The fix is **published budget lines** that sponsors see before paying and that `release_funds` must follow ([#32](https://github.com/inowo-labs/inowo-Contract/issues/32)), supported by a **funding deadline** ([#31](https://github.com/inowo-labs/inowo-Contract/issues/31)). Until then, sponsors should treat an event as trust in its organizer; `attach_receipt` lets a payout carry proof of what it was spent on, `get_organizer_stats`/`get_organizer_events` let sponsors check an organizer's history before committing, and the public payout list with memos is the accountability mechanism.
-2. **The funding goal does nothing.** It's stored and shown, but missing it has no effect: no deadline, no automatic cancellation ([#31](https://github.com/inowo-labs/inowo-Contract/issues/31)).
-3. **Money left in an ended event stays there.** After `end_event`, nothing can be refunded, and funds the organizer never releases remain in escrow indefinitely.
-4. **Tokens sent straight to the contract are lost.** Only `sponsor_event` and `buy_ticket` credit an event. USDC transferred to the contract address directly is not attributed to any event and cannot be recovered.
-5. **Event dates aren't validated.** `create_event` accepts a date in the past ([#37](https://github.com/inowo-labs/inowo-Contract/issues/37)).
-6. **The owner-ticket index is a history, not a live view.** `get_tickets_by_owner` returns every ticket an address has ever bought or received by transfer — including ones it has since transferred away. A caller has to check `get_ticket(...).owner` to confirm a returned ID is still current.
+1. **The organizer decides who gets paid.** After an event ends, `release_funds` can pay *any* address up to the escrow balance. Nothing today ties payouts to a promised budget. The fix is **published budget lines** that sponsors see before paying and that `release_funds` must follow ([#32](https://github.com/inowo-labs/inowo-Contract/issues/32)). Until then, sponsors should treat an event as trust in its organizer; `attach_receipt` lets a payout carry proof of what it was spent on, `get_organizer_stats`/`get_organizer_events` let sponsors check an organizer's history before committing, and the public payout list with memos is the accountability mechanism.
+2. **Money left in an ended event stays there.** After `end_event`, nothing can be refunded, and funds the organizer never releases remain in escrow indefinitely.
+3. **Tokens sent straight to the contract are lost.** Only `sponsor_event` and `buy_ticket` credit an event. USDC transferred to the contract address directly is not attributed to any event and cannot be recovered.
+4. **The owner-ticket index is a history, not a live view.** `get_tickets_by_owner` returns every ticket an address has ever bought or received by transfer — including ones it has since transferred away. A caller has to check `get_ticket(...).owner` to confirm a returned ID is still current.
 
 ## Testing
 

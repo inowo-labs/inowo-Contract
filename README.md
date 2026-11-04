@@ -15,11 +15,11 @@ Most community events — meetups, hackathons, campus and church events — run 
 
 ## How Inowo works
 
-1. **Create** — An organizer creates an event with a funding goal and one or more ticket tiers.
+1. **Create** — An organizer creates an event with a funding goal, a funding deadline, and one or more ticket tiers.
 2. **Fund** — Sponsors contribute USDC. Every contribution is recorded on-chain against the sponsor's address. Ticket sales flow into the same escrow.
 3. **Hold** — Funds sit in the contract, not in the organizer's wallet.
 4. **Release** — After the event ends, the organizer releases funds to named recipients — workers, vendors, the venue. Each payout carries a memo saying what it pays for and sits on the same ledger as every contribution.
-5. **Refund** — If the event is cancelled, every sponsor and ticket holder can claim their money back from the contract in full.
+5. **Refund** — If the event is cancelled — by the organizer, or by anyone once the funding deadline passes with the goal unmet — every sponsor and ticket holder can claim their money back from the contract in full.
 
 Over time, every event an organizer completes becomes a public track record: funds raised, funds released, refunds paid. That record is the organizer's reason to use Inowo — it's what earns sponsor trust for the next event.
 
@@ -38,7 +38,7 @@ Inowo is in early development on Stellar testnet. Here is exactly what exists to
 
 | Feature | Description |
 |---------|-------------|
-| Event creation | Organizer creates an event with a funding goal and multiple ticket tiers (price + supply cap) |
+| Event creation | Organizer creates an event with a funding goal, a funding deadline, and multiple ticket tiers (price + supply cap) |
 | Sponsorship | Sponsors contribute USDC; each contribution is recorded publicly |
 | Ticket purchase | Attendees buy tickets in USDC; each ticket is an on-chain ownership record |
 | Check-in | Organizer redeems a ticket at the door; a ticket can only be redeemed once |
@@ -52,14 +52,13 @@ Inowo is in early development on Stellar testnet. Here is exactly what exists to
 | Read access | Anyone can query events, tiers, tickets, sponsorships, sponsor totals, balances, and payouts |
 | TypeScript bindings | A generated, typed client in [`bindings/`](./bindings) — every argument, return type, and error code matches the contract, regenerated with `scripts/generate-bindings.sh` |
 | Organizer track record | On-chain stats per organizer (events created/ended/cancelled, total raised/released/refunded) and a paginated list of every event they've created |
+| Funding deadline | Every event has a deadline; if the funding goal isn't met by then, anyone can call `expire_event` to cancel it and open refunds — no organizer action needed |
 
 ### Planned — open for contribution
 
 | Feature | Difficulty | Issue |
 |---------|------------|-------|
 | Budget lines — organizer publishes planned spending per recipient before funding opens; releases are restricted to it | Hard | [#32](https://github.com/inowo-labs/inowo-Contract/issues/32) |
-| Funding deadline — anyone can cancel an underfunded event once the deadline passes, opening refunds | Hard | [#31](https://github.com/inowo-labs/inowo-Contract/issues/31) |
-| Reject events dated in the past | Easy | [#37](https://github.com/inowo-labs/inowo-Contract/issues/37) |
 
 ## Project structure
 
@@ -78,14 +77,14 @@ All writes — creating events, sponsoring, buying tickets — are signed by the
 | Role | Can do today | Planned |
 |------|--------------|---------|
 | Organizer | Create events, define tiers, check in tickets, end or cancel events, release funds to recipients | Publish budget lines before funding opens |
-| Sponsor | Contribute USDC; view every sponsorship for an event; claim a full refund if the event is cancelled | Refund if the funding goal is missed |
+| Sponsor | Contribute USDC; view every sponsorship for an event; claim a full refund if the event is cancelled or expires unfunded | — |
 | Attendee | Buy tickets; prove ownership on-chain; claim a refund if the event is cancelled; transfer an unused ticket to someone else | — |
 | Recipient | Receive payouts from an event's escrow, each with a public memo, and have the organizer attach proof of spend | — |
-| Anyone | Read all events, tickets, sponsorships, balances, payout history, and every organizer's track record | — |
+| Anyone | Read all events, tickets, sponsorships, balances, payout history, and every organizer's track record; expire an event that missed its funding deadline | — |
 
 ## Data model
 
-- **Event** — organizer, name, description, venue, date, funding goal, escrowed balance, and status (`Active`, `Ended`, `Cancelled`).
+- **Event** — organizer, name, description, venue, date, funding goal, funding deadline, escrowed balance, and status (`Active`, `Ended`, `Cancelled`).
 - **Ticket tier** — a named price level (e.g. General, VIP) with a price and supply cap.
 - **Ticket** — an ownership record linking a buyer's address to an event and tier, with the price paid and redeemed / refunded flags.
 - **Sponsorship** — a contribution recorded against the sponsor's address.
@@ -176,13 +175,14 @@ Never hand-edit `bindings/src/index.ts`; CI regenerates it and fails if the comm
 | Function | Parameters | Returns | Description |
 |----------|------------|---------|-------------|
 | `__constructor` | `token: Address` | — | Runs once at deployment; records the USDC token contract address |
-| `create_event` | `organizer: Address, name: String, description: String, venue: String, date_unix: u64, funding_goal: i128, tiers: Vec<TierInput>` | `u32` (event ID) | Creates an event with one or more ticket tiers |
+| `create_event` | `organizer: Address, name: String, description: String, venue: String, date_unix: u64, funding_goal: i128, funding_deadline: u64, tiers: Vec<TierInput>` | `u32` (event ID) | Creates an event with one or more ticket tiers; `funding_deadline` must be in the future and on or before `date_unix` |
 | `sponsor_event` | `sponsor: Address, event_id: u32, amount: i128` | — | Contributes USDC to an event's escrow |
 | `buy_ticket` | `buyer: Address, event_id: u32, tier_index: u32` | `u32` (ticket ID) | Buys a ticket, paying the tier price in USDC |
 | `transfer_ticket` | `from: Address, event_id: u32, ticket_id: u32, to: Address` | — | Current owner hands an unused ticket to another address (active events only); refunds follow the ticket |
 | `redeem_ticket` | `organizer: Address, event_id: u32, ticket_id: u32` | — | Checks in a ticket at the door |
 | `end_event` | `organizer: Address, event_id: u32` | — | Closes an event (`Active` → `Ended`); blocks further sales and sponsorships |
 | `cancel_event` | `organizer: Address, event_id: u32` | — | Cancels an event (`Active` → `Cancelled`); blocks sales, sponsorships, and check-in, and opens refunds |
+| `expire_event` | `event_id: u32` | — | Callable by anyone, no auth required: cancels an `Active` event once its `funding_deadline` has passed with the goal unmet, opening refunds the same as `cancel_event` |
 | `refund_ticket` | `owner: Address, event_id: u32, ticket_id: u32` | `i128` (amount) | Ticket owner claims back the price paid for a ticket to a cancelled event |
 | `refund_sponsorship` | `sponsor: Address, event_id: u32` | `i128` (amount) | Sponsor claims back their total contribution to a cancelled event |
 | `release_funds` | `organizer: Address, event_id: u32, recipient: Address, amount: i128, memo: String` | `u32` (payout ID) | After an event ends, pays a recipient from escrow; `memo` (1–200 bytes) says what the payout is for |
@@ -225,6 +225,7 @@ Every state change publishes a contract event, so indexers can follow an event's
 | `ticket_redeemed` | `event_id` | `ticket_id` | `redeem_ticket` |
 | `event_ended` | `event_id` | `balance` | `end_event` |
 | `event_cancelled` | `event_id` | `balance` | `cancel_event` |
+| `event_expired` | `event_id` | `balance` | `expire_event` |
 | `ticket_refunded` | `event_id`, `owner` | `ticket_id`, `amount` | `refund_ticket` |
 | `sponsorship_refunded` | `event_id`, `sponsor` | `amount` | `refund_sponsorship` |
 | `funds_released` | `event_id`, `recipient` | `payout_id`, `amount`, `memo` | `release_funds` |
@@ -275,6 +276,9 @@ Every function that can fail returns a typed error. On-chain, clients receive it
 | 23 | `TransferToSelf` | A ticket cannot be transferred to its current owner |
 | 24 | `ReceiptAlreadyAttached` | The payout already has a receipt hash attached |
 | 25 | `InvalidReceiptUri` | The receipt URI is longer than 200 bytes |
+| 26 | `InvalidFundingDeadline` | The funding deadline isn't in the future, or is after the event date |
+| 27 | `FundingDeadlineNotPassed` | `expire_event` was called before the funding deadline passed |
+| 28 | `FundingGoalReached` | `expire_event` was called on an event that already met its funding goal |
 
 ## Contributing
 

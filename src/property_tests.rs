@@ -291,6 +291,7 @@ impl Harness<'_> {
                     &String::from_str(&self.env, "venue"),
                     &1_900_000_000,
                     &1_000_000_000,
+                    &1_800_000_000_u64,
                     &tiers,
                 );
                 assert_eq!(id as usize, self.model.events.len());
