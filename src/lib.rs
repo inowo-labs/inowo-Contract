@@ -46,6 +46,10 @@ pub struct Event {
     pub date_unix: u64,
     /// Funding goal in USDC stroops.
     pub funding_goal: i128,
+    /// Unix timestamp by which `funding_goal` must be reached, or anyone can
+    /// call `expire_event`. Always in the future at creation and on or
+    /// before `date_unix`.
+    pub funding_deadline: u64,
     /// Current USDC balance held by the contract for this event.
     pub balance: i128,
     pub status: EventStatus,
@@ -141,6 +145,10 @@ pub enum Error {
     TransferToSelf = 23,
     ReceiptAlreadyAttached = 24,
     InvalidReceiptUri = 25,
+    /// The funding deadline isn't in the future, or is after the event date.
+    InvalidFundingDeadline = 26,
+    FundingDeadlineNotPassed = 27,
+    FundingGoalReached = 28,
 }
 
 // ─── Contract events ──────────────────────────────────────────────────────────
@@ -211,6 +219,17 @@ pub struct EventEnded {
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EventCancelled {
+    #[topic]
+    pub event_id: u32,
+    pub balance: i128,
+}
+
+/// Published when `expire_event` cancels an event that missed its funding
+/// deadline — distinct from `EventCancelled` (an organizer's own choice) so
+/// indexers can tell the two apart.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EventExpired {
     #[topic]
     pub event_id: u32,
     pub balance: i128,
@@ -465,6 +484,7 @@ impl InowoContract {
         venue: String,
         date_unix: u64,
         funding_goal: i128,
+        funding_deadline: u64,
         tiers: Vec<TierInput>,
     ) -> Result<u32, Error> {
         organizer.require_auth();
@@ -474,6 +494,9 @@ impl InowoContract {
         }
         if funding_goal <= 0 {
             return Err(Error::InvalidFundingGoal);
+        }
+        if funding_deadline <= env.ledger().timestamp() || funding_deadline > date_unix {
+            return Err(Error::InvalidFundingDeadline);
         }
         for t in tiers.iter() {
             if t.price <= 0 {
@@ -504,6 +527,7 @@ impl InowoContract {
                 venue,
                 date_unix,
                 funding_goal,
+                funding_deadline,
                 balance: 0,
                 status: EventStatus::Active,
             },
@@ -798,6 +822,38 @@ impl InowoContract {
         save_organizer_stats(&env, &organizer, &stats);
 
         EventCancelled {
+            event_id,
+            balance: event.balance,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Anyone can cancel an event that missed its funding deadline — no
+    /// auth required, since it's enforcing a promise made to sponsors, not
+    /// acting on the organizer's behalf. "Raised" is the event's current
+    /// balance: sponsorships and ticket sales still held, since nothing can
+    /// be refunded or released while an event is `Active`.
+    pub fn expire_event(env: Env, event_id: u32) -> Result<(), Error> {
+        let mut event = load_event(&env, event_id)?;
+        if event.status != EventStatus::Active {
+            return Err(Error::EventNotActive);
+        }
+        if env.ledger().timestamp() <= event.funding_deadline {
+            return Err(Error::FundingDeadlineNotPassed);
+        }
+        if event.balance >= event.funding_goal {
+            return Err(Error::FundingGoalReached);
+        }
+
+        event.status = EventStatus::Cancelled;
+        save(&env, &DataKey::Event(event_id), &event);
+
+        let mut stats = load_organizer_stats(&env, &event.organizer);
+        stats.events_cancelled += 1;
+        save_organizer_stats(&env, &event.organizer, &stats);
+
+        EventExpired {
             event_id,
             balance: event.balance,
         }

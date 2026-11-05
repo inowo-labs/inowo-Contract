@@ -4,7 +4,7 @@ use super::*;
 use soroban_sdk::{
     testutils::{
         storage::{Instance as _, Persistent as _},
-        Address as _, Events as _,
+        Address as _, Events as _, Ledger as _,
     },
     token::{Client as TokenClient, StellarAssetClient},
     vec, Address, Env, Event as _, String,
@@ -56,6 +56,7 @@ fn create_test_event(env: &Env, client: &InowoContractClient, organizer: &Addres
         &String::from_str(env, "San Francisco"),
         &1_750_000_000_u64,
         &500_000_000_i128,
+        &1_700_000_000_u64,
         &default_tiers(env),
     )
 }
@@ -244,6 +245,7 @@ fn test_sold_out_tier_blocks_purchase() {
         &String::from_str(&env, "Secret venue"),
         &1_750_000_000_u64,
         &10_000_000_i128,
+        &1_700_000_000_u64,
         &tiers,
     );
 
@@ -471,6 +473,7 @@ fn test_create_event_with_no_tiers_rejected() {
         &String::from_str(&env, "venue"),
         &1_750_000_000_u64,
         &100_000_000_i128,
+        &1_700_000_000_u64,
         &Vec::new(&env),
     );
 
@@ -491,6 +494,7 @@ fn test_create_event_with_negative_funding_goal_rejected() {
         &String::from_str(&env, "venue"),
         &1_750_000_000_u64,
         &-1_i128,
+        &1_700_000_000_u64,
         &default_tiers(&env),
     );
 
@@ -521,6 +525,7 @@ fn test_zero_price_tier_rejected() {
         &String::from_str(&env, "venue"),
         &1_750_000_000_u64,
         &100_000_000_i128,
+        &1_700_000_000_u64,
         &bad_tiers,
     );
 
@@ -551,6 +556,7 @@ fn test_zero_supply_cap_tier_rejected() {
         &String::from_str(&env, "venue"),
         &1_750_000_000_u64,
         &100_000_000_i128,
+        &1_700_000_000_u64,
         &bad_tiers,
     );
 
@@ -2147,6 +2153,7 @@ fn test_get_tickets_by_owner_limit_is_capped_at_max_page() {
         &String::from_str(&env, "venue"),
         &1_750_000_000_u64,
         &100_000_000_i128,
+        &1_700_000_000_u64,
         &tiers,
     );
     token_admin.mint(&alice, &1_000_000_000_i128);
@@ -2465,4 +2472,168 @@ fn test_organizer_stats_are_kept_separately_per_organizer() {
 
     assert_eq!(client.get_organizer_stats(&alice).events_created, 1);
     assert_eq!(client.get_organizer_stats(&bob).events_created, 2);
+}
+
+// ─── Funding deadline ────────────────────────────────────────────────────────
+
+#[test]
+fn test_create_event_with_funding_deadline_not_in_future_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+
+    // The ledger's timestamp starts at 0, so 0 is not in the future.
+    let result = client.try_create_event(
+        &organizer,
+        &String::from_str(&env, "Bad Deadline"),
+        &String::from_str(&env, "desc"),
+        &String::from_str(&env, "venue"),
+        &1_750_000_000_u64,
+        &100_000_000_i128,
+        &0u64,
+        &default_tiers(&env),
+    );
+
+    assert_eq!(result.err(), Some(Ok(Error::InvalidFundingDeadline)));
+}
+
+#[test]
+fn test_create_event_with_funding_deadline_after_event_date_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+
+    let result = client.try_create_event(
+        &organizer,
+        &String::from_str(&env, "Bad Deadline"),
+        &String::from_str(&env, "desc"),
+        &String::from_str(&env, "venue"),
+        &1_750_000_000_u64,
+        &100_000_000_i128,
+        &1_750_000_001_u64,
+        &default_tiers(&env),
+    );
+
+    assert_eq!(result.err(), Some(Ok(Error::InvalidFundingDeadline)));
+}
+
+#[test]
+fn test_expire_event_before_deadline_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let event_id = create_test_event(&env, &client, &organizer);
+
+    assert_eq!(
+        client.try_expire_event(&event_id).err(),
+        Some(Ok(Error::FundingDeadlineNotPassed))
+    );
+}
+
+#[test]
+fn test_expire_event_after_deadline_with_goal_met_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let sponsor = Address::generate(&env);
+    token_admin.mint(&sponsor, &500_000_000_i128);
+
+    // create_test_event's goal is 500_000_000 and deadline is 1_700_000_000.
+    let event_id = create_test_event(&env, &client, &organizer);
+    client.sponsor_event(&sponsor, &event_id, &500_000_000_i128);
+
+    env.ledger().set_timestamp(1_700_000_001);
+    assert_eq!(
+        client.try_expire_event(&event_id).err(),
+        Some(Ok(Error::FundingGoalReached))
+    );
+}
+
+#[test]
+fn test_expire_event_after_deadline_with_goal_unmet_cancels_and_opens_refunds() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, contract_id, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let sponsor = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    token_admin.mint(&sponsor, &100_000_000_i128);
+    token_admin.mint(&buyer, &10_000_000_i128);
+
+    let event_id = create_test_event(&env, &client, &organizer);
+    client.sponsor_event(&sponsor, &event_id, &100_000_000_i128);
+    client.buy_ticket(&buyer, &event_id, &0);
+
+    env.ledger().set_timestamp(1_700_000_001);
+    client.expire_event(&event_id);
+    let events = env.events().all().filter_by_contract(&contract_id);
+
+    let event = client.get_event(&event_id);
+    assert_eq!(event.status, EventStatus::Cancelled);
+    assert_eq!(event.balance, 110_000_000);
+
+    assert_eq!(
+        events,
+        [EventExpired {
+            event_id,
+            balance: 110_000_000,
+        }
+        .to_xdr(&env, &contract_id)]
+    );
+
+    // Refunds work exactly as they would after a manual cancel_event.
+    assert_eq!(client.refund_sponsorship(&sponsor, &event_id), 100_000_000);
+    assert_eq!(client.refund_ticket(&buyer, &event_id, &0), 10_000_000);
+
+    // An expired event still counts against the organizer's cancelled tally.
+    assert_eq!(client.get_organizer_stats(&organizer).events_cancelled, 1);
+}
+
+#[test]
+fn test_expire_event_on_ended_or_cancelled_event_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+
+    // Both events are created before the ledger advances past their
+    // funding_deadline — create_event itself would reject a deadline
+    // that's already passed.
+    let ended = create_test_event(&env, &client, &organizer);
+    let cancelled = create_test_event(&env, &client, &organizer);
+    client.end_event(&organizer, &ended);
+    client.cancel_event(&organizer, &cancelled);
+
+    env.ledger().set_timestamp(1_700_000_001);
+    assert_eq!(
+        client.try_expire_event(&ended).err(),
+        Some(Ok(Error::EventNotActive))
+    );
+    assert_eq!(
+        client.try_expire_event(&cancelled).err(),
+        Some(Ok(Error::EventNotActive))
+    );
+}
+
+#[test]
+fn test_expire_nonexistent_event_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, client) = setup(&env);
+
+    assert_eq!(
+        client.try_expire_event(&99).err(),
+        Some(Ok(Error::EventNotFound))
+    );
 }

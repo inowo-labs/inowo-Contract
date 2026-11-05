@@ -78,10 +78,17 @@ send_usdc inowo-demo-attendee "$(usdc 550)"
 
 ORG_ADDR="$(addr "$ORGANIZER")"
 
-create() { # name description venue date goal tiers-json
+# create_event's funding_deadline must be in the future and on or before
+# date_unix, so dates here are relative to when the script actually runs
+# rather than fixed timestamps that would eventually land in the past.
+NOW=$(date -u +%s)
+HOUR=3600
+DAY=86400
+
+create() { # name description venue date goal deadline tiers-json
   invoke "$ORGANIZER" create_event --organizer "$ORG_ADDR" \
     --name "$1" --description "$2" --venue "$3" \
-    --date_unix "$4" --funding_goal "$5" --tiers "$6" | tr -d '"'
+    --date_unix "$4" --funding_goal "$5" --funding_deadline "$6" --tiers "$7" | tr -d '"'
 }
 
 tier() { printf '{"name":"%s","price":"%s","supply_cap":%s}' "$1" "$2" "$3"; }
@@ -89,7 +96,7 @@ tier() { printf '{"name":"%s","price":"%s","supply_cap":%s}' "$1" "$2" "$3"; }
 echo "1/3 Active event..."
 ACTIVE=$(create "Lagos Stellar Builders Meetup" \
   "Monthly meetup for developers building on Stellar and Soroban. Talks, demos, and pizza." \
-  "Co-Creation Hub, Yaba, Lagos" 1794672000 "$(usdc 10000)" \
+  "Co-Creation Hub, Yaba, Lagos" "$((NOW + 30 * DAY))" "$(usdc 10000)" "$((NOW + 20 * DAY))" \
   "[$(tier General "$(usdc 100)" 150),$(tier VIP "$(usdc 300)" 30)]")
 invoke inowo-demo-sponsor-1 sponsor_event --sponsor "$(addr inowo-demo-sponsor-1)" --event_id "$ACTIVE" --amount "$(usdc 500)" >/dev/null
 invoke inowo-demo-sponsor-2 sponsor_event --sponsor "$(addr inowo-demo-sponsor-2)" --event_id "$ACTIVE" --amount "$(usdc 300)" >/dev/null
@@ -99,7 +106,7 @@ invoke inowo-demo-attendee buy_ticket --buyer "$(addr inowo-demo-attendee)" --ev
 echo "2/3 Ended event with payouts..."
 ENDED=$(create "Soroban Smart Contract Workshop" \
   "Hands-on workshop: write, test, and deploy your first Soroban contract." \
-  "Abuja Tech Hub, Abuja" 1790416800 "$(usdc 2000)" \
+  "Abuja Tech Hub, Abuja" "$((NOW + 2 * HOUR))" "$(usdc 2000)" "$((NOW + 1 * HOUR))" \
   "[$(tier General "$(usdc 100)" 60)]")
 invoke inowo-demo-sponsor-1 sponsor_event --sponsor "$(addr inowo-demo-sponsor-1)" --event_id "$ENDED" --amount "$(usdc 300)" >/dev/null
 invoke inowo-demo-attendee buy_ticket --buyer "$(addr inowo-demo-attendee)" --event_id "$ENDED" --tier_index 0 >/dev/null
@@ -113,7 +120,7 @@ invoke "$ORGANIZER" release_funds --organizer "$ORG_ADDR" --event_id "$ENDED" \
 echo "3/3 Cancelled event with refunds..."
 CANCELLED=$(create "Campus Hack Night" \
   "Overnight student hackathon. Cancelled after the venue fell through - all funds refunded." \
-  "University of Lagos, Akoka" 1792864800 "$(usdc 3000)" \
+  "University of Lagos, Akoka" "$((NOW + 2 * HOUR))" "$(usdc 3000)" "$((NOW + 1 * HOUR))" \
   "[$(tier Student "$(usdc 50)" 200)]")
 invoke inowo-demo-sponsor-2 sponsor_event --sponsor "$(addr inowo-demo-sponsor-2)" --event_id "$CANCELLED" --amount "$(usdc 200)" >/dev/null
 TICKET=$(invoke inowo-demo-attendee buy_ticket --buyer "$(addr inowo-demo-attendee)" --event_id "$CANCELLED" --tier_index 0 | tr -d '"')
