@@ -95,6 +95,19 @@ pub struct Payout {
     pub receipt_uri: Option<String>,
 }
 
+/// A planned disbursement, published before anyone funds the event so
+/// sponsors see where their money will go before they pay. `release_funds`
+/// can only pay out against a line, never more than `amount` in total.
+#[contracttype]
+#[derive(Clone)]
+pub struct BudgetLine {
+    pub recipient: Address,
+    pub amount: i128,
+    pub purpose: String,
+    /// Total released against this line so far, across every call.
+    pub released: i128,
+}
+
 /// An organizer's on-chain track record, updated by every function that
 /// touches money or an event's lifecycle. A public history of delivering
 /// events and handling money well is what earns sponsor trust.
@@ -149,6 +162,12 @@ pub enum Error {
     InvalidFundingDeadline = 26,
     FundingDeadlineNotPassed = 27,
     FundingGoalReached = 28,
+    /// Budget lines can only be added before the event's first sponsorship
+    /// or ticket sale, so sponsors always see the final budget before paying.
+    BudgetLocked = 29,
+    BudgetLineNotFound = 30,
+    /// The release would push this line's total past its budgeted amount.
+    BudgetLineExceeded = 31,
 }
 
 // ─── Contract events ──────────────────────────────────────────────────────────
@@ -264,8 +283,22 @@ pub struct FundsReleased {
     #[topic]
     pub recipient: Address,
     pub payout_id: u32,
+    pub line_id: u32,
     pub amount: i128,
     pub memo: String,
+}
+
+/// Published when an organizer publishes a planned disbursement, before
+/// anyone has funded the event.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BudgetLineAdded {
+    #[topic]
+    pub event_id: u32,
+    pub line_id: u32,
+    pub recipient: Address,
+    pub amount: i128,
+    pub purpose: String,
 }
 
 #[contractevent]
@@ -307,6 +340,10 @@ pub enum DataKey {
     /// One entry per event an organizer has ever created, so the list can
     /// grow without hitting entry size limits. See `get_organizer_events`.
     OrganizerEvent(Address, u32),
+    BudgetLineCount(u32),
+    /// One entry per budget line so the budget can grow without hitting
+    /// entry size limits. See `get_budget_line`.
+    BudgetLine(u32, u32),
 }
 
 /// Upper bound on a payout memo, in bytes, to keep payout entries small.
@@ -945,17 +982,73 @@ impl InowoContract {
         Ok(amount)
     }
 
-    /// Organizer releases escrowed funds to a recipient (a worker, vendor, or
-    /// venue) after the event has ended. Every release is stored as a public
-    /// payout record with a memo explaining what it pays for.
-    /// Returns the payout ID.
-    pub fn release_funds(
+    /// Organizer publishes a planned disbursement — who gets paid, how
+    /// much, and for what — before anyone has funded the event. Only
+    /// allowed while `Active` and before the first sponsorship or ticket
+    /// sale, so the budget a sponsor sees before paying can't change
+    /// afterward. Returns the line ID.
+    pub fn add_budget_line(
         env: Env,
         organizer: Address,
         event_id: u32,
         recipient: Address,
         amount: i128,
-        memo: String,
+        purpose: String,
+    ) -> Result<u32, Error> {
+        organizer.require_auth();
+
+        let event = load_event(&env, event_id)?;
+        if event.organizer != organizer {
+            return Err(Error::NotOrganizer);
+        }
+        if event.status != EventStatus::Active {
+            return Err(Error::EventNotActive);
+        }
+        if event.balance > 0 {
+            return Err(Error::BudgetLocked);
+        }
+        if amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+        if purpose.is_empty() || purpose.len() > MAX_MEMO_LEN {
+            return Err(Error::InvalidMemo);
+        }
+
+        let line_id = load_u32(&env, &DataKey::BudgetLineCount(event_id));
+        save(&env, &DataKey::BudgetLineCount(event_id), &(line_id + 1));
+        save(
+            &env,
+            &DataKey::BudgetLine(event_id, line_id),
+            &BudgetLine {
+                recipient: recipient.clone(),
+                amount,
+                purpose: purpose.clone(),
+                released: 0,
+            },
+        );
+
+        BudgetLineAdded {
+            event_id,
+            line_id,
+            recipient,
+            amount,
+            purpose,
+        }
+        .publish(&env);
+        Ok(line_id)
+    }
+
+    /// Organizer releases escrowed funds against a published budget line,
+    /// after the event has ended. Every release is stored as a public
+    /// payout record; the recipient and memo come from the line, and the
+    /// release can never push the line's total past its budgeted amount.
+    /// Returns the payout ID.
+    pub fn release_funds(
+        env: Env,
+        organizer: Address,
+        event_id: u32,
+        line_id: u32,
+        amount: i128,
     ) -> Result<u32, Error> {
         organizer.require_auth();
 
@@ -972,9 +1065,17 @@ impl InowoContract {
         if amount > event.balance {
             return Err(Error::InsufficientFunds);
         }
-        if memo.is_empty() || memo.len() > MAX_MEMO_LEN {
-            return Err(Error::InvalidMemo);
+
+        let mut line: BudgetLine = env
+            .storage()
+            .persistent()
+            .get(&DataKey::BudgetLine(event_id, line_id))
+            .ok_or(Error::BudgetLineNotFound)?;
+        if line.released + amount > line.amount {
+            return Err(Error::BudgetLineExceeded);
         }
+        line.released += amount;
+        save(&env, &DataKey::BudgetLine(event_id, line_id), &line);
 
         let payout_id = load_u32(&env, &DataKey::PayoutCounter(event_id));
         save(&env, &DataKey::PayoutCounter(event_id), &(payout_id + 1));
@@ -982,9 +1083,9 @@ impl InowoContract {
             &env,
             &DataKey::Payout(event_id, payout_id),
             &Payout {
-                recipient: recipient.clone(),
+                recipient: line.recipient.clone(),
                 amount,
-                memo: memo.clone(),
+                memo: line.purpose.clone(),
                 timestamp: env.ledger().timestamp(),
                 receipt_hash: None,
                 receipt_uri: None,
@@ -1002,14 +1103,15 @@ impl InowoContract {
         stats.total_released += amount;
         save_organizer_stats(&env, &organizer, &stats);
 
-        pay_out(&env, &recipient, amount)?;
+        pay_out(&env, &line.recipient, amount)?;
 
         FundsReleased {
             event_id,
-            recipient,
+            recipient: line.recipient,
             payout_id,
+            line_id,
             amount,
-            memo,
+            memo: line.purpose,
         }
         .publish(&env);
         Ok(payout_id)
@@ -1228,6 +1330,20 @@ impl InowoContract {
     pub fn payout_count(env: Env, event_id: u32) -> Result<u32, Error> {
         require_event_exists(&env, event_id)?;
         Ok(load_u32(&env, &DataKey::PayoutCounter(event_id)))
+    }
+
+    pub fn get_budget_line(env: Env, event_id: u32, line_id: u32) -> Result<BudgetLine, Error> {
+        require_event_exists(&env, event_id)?;
+        env.storage()
+            .persistent()
+            .get(&DataKey::BudgetLine(event_id, line_id))
+            .ok_or(Error::BudgetLineNotFound)
+    }
+
+    /// Returns the number of budget lines published for an event.
+    pub fn budget_line_count(env: Env, event_id: u32) -> Result<u32, Error> {
+        require_event_exists(&env, event_id)?;
+        Ok(load_u32(&env, &DataKey::BudgetLineCount(event_id)))
     }
 
     /// Returns the total USDC released from an event's escrow. Together with
