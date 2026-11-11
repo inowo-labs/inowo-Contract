@@ -44,7 +44,7 @@ The two money-out paths are deliberately exclusive: **funds can only be released
 |---|---|---|---|
 | in | `sponsor_event` | caller's choice, > 0 | `balance += amount`, sponsor's running total `+= amount` |
 | in | `buy_ticket` | the tier's price | `balance += price`, ticket records `price_paid` |
-| out | `release_funds` | organizer's choice, > 0 and ≤ `balance` | `balance -= amount`, payout recorded with a memo |
+| out | `release_funds` | organizer's choice, > 0, ≤ `balance`, and ≤ the budget line's remaining amount | `balance -= amount`, payout recorded, the line's `released` `+= amount` |
 | out | `refund_ticket` | the ticket's `price_paid` | `balance -= price_paid`, ticket marked `refunded` |
 | out | `refund_sponsorship` | the sponsor's running total | `balance -= total`, running total reset to 0 |
 
@@ -74,6 +74,7 @@ There is **no admin, owner, pause switch, or upgrade function.** Nobody — incl
 | `SponsorshipCount(id)`, `Sponsorship(id, n)` | persistent | one entry per contribution, so a flood of tiny sponsorships can't grow a single entry past Soroban's size limit |
 | `SponsorTotal(id, sponsor)` | persistent | what each sponsor is owed if the event is cancelled |
 | `OwnerTicketCount(id, owner)`, `OwnerTicket(id, owner, n)` | persistent | every ticket an address has ever bought or received by transfer for an event — a history, not a live "currently owned" list |
+| `BudgetLineCount(id)`, `BudgetLine(id, n)` | persistent | one entry per planned disbursement: recipient, amount, purpose, how much has been released against it |
 | `PayoutCounter(id)`, `Payout(id, n)`, `TotalReleased(id)` | persistent | one entry per payout: recipient, amount, memo, ledger time, receipt hash + URI (once attached) |
 | `OrganizerStats(organizer)` | persistent | events created/ended/cancelled, total raised/released/refunded |
 | `OrganizerEventCount(organizer)`, `OrganizerEvent(organizer, n)` | persistent | one entry per event an organizer has ever created |
@@ -94,10 +95,9 @@ Every state change emits a contract event (see the Events table in the README), 
 
 These are real, they are tracked as issues, and a few are the project's most important next steps.
 
-1. **The organizer decides who gets paid.** After an event ends, `release_funds` can pay *any* address up to the escrow balance. Nothing today ties payouts to a promised budget. The fix is **published budget lines** that sponsors see before paying and that `release_funds` must follow ([#32](https://github.com/inowo-labs/inowo-Contract/issues/32)). Until then, sponsors should treat an event as trust in its organizer; `attach_receipt` lets a payout carry proof of what it was spent on, `get_organizer_stats`/`get_organizer_events` let sponsors check an organizer's history before committing, and the public payout list with memos is the accountability mechanism.
-2. **Money left in an ended event stays there.** After `end_event`, nothing can be refunded, and funds the organizer never releases remain in escrow indefinitely.
-3. **Tokens sent straight to the contract are lost.** Only `sponsor_event` and `buy_ticket` credit an event. USDC transferred to the contract address directly is not attributed to any event and cannot be recovered.
-4. **The owner-ticket index is a history, not a live view.** `get_tickets_by_owner` returns every ticket an address has ever bought or received by transfer — including ones it has since transferred away. A caller has to check `get_ticket(...).owner` to confirm a returned ID is still current.
+1. **Money left in an ended event stays there.** After `end_event`, nothing can be refunded, and funds the organizer never releases (or never budgeted) remain in escrow indefinitely.
+2. **Tokens sent straight to the contract are lost.** Only `sponsor_event` and `buy_ticket` credit an event. USDC transferred to the contract address directly is not attributed to any event and cannot be recovered.
+3. **The owner-ticket index is a history, not a live view.** `get_tickets_by_owner` returns every ticket an address has ever bought or received by transfer — including ones it has since transferred away. A caller has to check `get_ticket(...).owner` to confirm a returned ID is still current.
 
 ## Testing
 

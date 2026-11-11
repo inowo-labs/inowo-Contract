@@ -1292,11 +1292,15 @@ fn test_all_refunds_return_every_stroop_collected() {
 
 /// Creates an event, sponsors it with 60 USDC, sells one 1-USDC ticket, and
 /// ends it — leaving 61 USDC in escrow ready for release.
+/// Creates an event with a single budget line big enough to cover the full
+/// 610_000_000 it ends up raising, paying `recipient` — tests that don't
+/// care who gets paid can pass a throwaway address.
 fn ended_event_with_funds(
     env: &Env,
     client: &InowoContractClient,
     token_admin: &StellarAssetClient,
     organizer: &Address,
+    recipient: &Address,
 ) -> u32 {
     let sponsor = Address::generate(env);
     let buyer = Address::generate(env);
@@ -1304,8 +1308,33 @@ fn ended_event_with_funds(
     token_admin.mint(&buyer, &10_000_000_i128);
 
     let event_id = create_test_event(env, client, organizer);
+    client.add_budget_line(
+        organizer,
+        &event_id,
+        recipient,
+        &610_000_000_i128,
+        &String::from_str(env, "Sound crew"),
+    );
     client.sponsor_event(&sponsor, &event_id, &600_000_000_i128);
     client.buy_ticket(&buyer, &event_id, &0);
+    client.end_event(organizer, &event_id);
+    event_id
+}
+
+/// Same lifecycle as `ended_event_with_funds`, but with no budget line at
+/// all — for tests that need an Ended event where every `release_funds`
+/// call is guaranteed to fail with `BudgetLineNotFound`.
+fn ended_event_with_funds_without_budget(
+    env: &Env,
+    client: &InowoContractClient,
+    token_admin: &StellarAssetClient,
+    organizer: &Address,
+) -> u32 {
+    let sponsor = Address::generate(env);
+    token_admin.mint(&sponsor, &600_000_000_i128);
+
+    let event_id = create_test_event(env, client, organizer);
+    client.sponsor_event(&sponsor, &event_id, &600_000_000_i128);
     client.end_event(organizer, &event_id);
     event_id
 }
@@ -1319,10 +1348,10 @@ fn test_release_funds_pays_recipient_and_records_payout() {
     let token = TokenClient::new(&env, &token_addr);
     let organizer = Address::generate(&env);
     let crew = Address::generate(&env);
-    let event_id = ended_event_with_funds(&env, &client, &token_admin, &organizer);
+    let event_id = ended_event_with_funds(&env, &client, &token_admin, &organizer, &crew);
     let memo = String::from_str(&env, "Sound crew");
 
-    let payout_id = client.release_funds(&organizer, &event_id, &crew, &250_000_000_i128, &memo);
+    let payout_id = client.release_funds(&organizer, &event_id, &0, &250_000_000_i128);
     let events = env.events().all().filter_by_contract(&contract_id);
 
     assert_eq!(payout_id, 0);
@@ -1342,6 +1371,7 @@ fn test_release_funds_pays_recipient_and_records_payout() {
             event_id,
             recipient: crew,
             payout_id,
+            line_id: 0,
             amount: 250_000_000,
             memo,
         }
@@ -1359,22 +1389,32 @@ fn test_release_funds_can_pay_several_recipients_until_escrow_is_empty() {
     let organizer = Address::generate(&env);
     let venue = Address::generate(&env);
     let caterer = Address::generate(&env);
-    let event_id = ended_event_with_funds(&env, &client, &token_admin, &organizer);
+    let sponsor = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    token_admin.mint(&sponsor, &600_000_000_i128);
+    token_admin.mint(&buyer, &10_000_000_i128);
 
-    client.release_funds(
+    let event_id = create_test_event(&env, &client, &organizer);
+    client.add_budget_line(
         &organizer,
         &event_id,
         &venue,
         &400_000_000_i128,
         &String::from_str(&env, "Venue hire"),
     );
-    let second = client.release_funds(
+    client.add_budget_line(
         &organizer,
         &event_id,
         &caterer,
         &210_000_000_i128,
         &String::from_str(&env, "Catering"),
     );
+    client.sponsor_event(&sponsor, &event_id, &600_000_000_i128);
+    client.buy_ticket(&buyer, &event_id, &0);
+    client.end_event(&organizer, &event_id);
+
+    client.release_funds(&organizer, &event_id, &0, &400_000_000_i128);
+    let second = client.release_funds(&organizer, &event_id, &1, &210_000_000_i128);
 
     assert_eq!(second, 1);
     assert_eq!(client.payout_count(&event_id), 2);
@@ -1391,15 +1431,9 @@ fn test_release_more_than_balance_fails() {
     let (_, token_admin, _, client) = setup(&env);
     let organizer = Address::generate(&env);
     let recipient = Address::generate(&env);
-    let event_id = ended_event_with_funds(&env, &client, &token_admin, &organizer);
+    let event_id = ended_event_with_funds(&env, &client, &token_admin, &organizer, &recipient);
 
-    let result = client.try_release_funds(
-        &organizer,
-        &event_id,
-        &recipient,
-        &610_000_001_i128,
-        &String::from_str(&env, "Too much"),
-    );
+    let result = client.try_release_funds(&organizer, &event_id, &0, &610_000_001_i128);
     assert_eq!(result.err(), Some(Ok(Error::InsufficientFunds)));
 }
 
@@ -1414,12 +1448,18 @@ fn test_release_before_event_ends_fails() {
     let recipient = Address::generate(&env);
     token_admin.mint(&sponsor, &100_000_000_i128);
     let event_id = create_test_event(&env, &client, &organizer);
+    client.add_budget_line(
+        &organizer,
+        &event_id,
+        &recipient,
+        &100_000_000_i128,
+        &String::from_str(&env, "Early withdrawal"),
+    );
     client.sponsor_event(&sponsor, &event_id, &100_000_000_i128);
-    let memo = String::from_str(&env, "Early withdrawal");
 
     assert_eq!(
         client
-            .try_release_funds(&organizer, &event_id, &recipient, &1_i128, &memo)
+            .try_release_funds(&organizer, &event_id, &0, &1_i128)
             .err(),
         Some(Ok(Error::EventNotEnded))
     );
@@ -1427,7 +1467,7 @@ fn test_release_before_event_ends_fails() {
     client.cancel_event(&organizer, &event_id);
     assert_eq!(
         client
-            .try_release_funds(&organizer, &event_id, &recipient, &1_i128, &memo)
+            .try_release_funds(&organizer, &event_id, &0, &1_i128)
             .err(),
         Some(Ok(Error::EventNotEnded))
     );
@@ -1441,15 +1481,9 @@ fn test_release_by_non_organizer_fails() {
     let (_, token_admin, _, client) = setup(&env);
     let organizer = Address::generate(&env);
     let impostor = Address::generate(&env);
-    let event_id = ended_event_with_funds(&env, &client, &token_admin, &organizer);
+    let event_id = ended_event_with_funds(&env, &client, &token_admin, &organizer, &impostor);
 
-    let result = client.try_release_funds(
-        &impostor,
-        &event_id,
-        &impostor,
-        &10_000_000_i128,
-        &String::from_str(&env, "Mine now"),
-    );
+    let result = client.try_release_funds(&impostor, &event_id, &0, &10_000_000_i128);
     assert_eq!(result.err(), Some(Ok(Error::NotOrganizer)));
 }
 
@@ -1461,13 +1495,12 @@ fn test_release_non_positive_amount_fails() {
     let (_, token_admin, _, client) = setup(&env);
     let organizer = Address::generate(&env);
     let recipient = Address::generate(&env);
-    let event_id = ended_event_with_funds(&env, &client, &token_admin, &organizer);
-    let memo = String::from_str(&env, "Nothing");
+    let event_id = ended_event_with_funds(&env, &client, &token_admin, &organizer, &recipient);
 
     for amount in [0_i128, -5_i128] {
         assert_eq!(
             client
-                .try_release_funds(&organizer, &event_id, &recipient, &amount, &memo)
+                .try_release_funds(&organizer, &event_id, &0, &amount)
                 .err(),
             Some(Ok(Error::InvalidAmount))
         );
@@ -1475,29 +1508,29 @@ fn test_release_non_positive_amount_fails() {
 }
 
 #[test]
-fn test_release_requires_a_memo_within_limit() {
+fn test_add_budget_line_requires_a_purpose_within_limit() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (_, token_admin, _, client) = setup(&env);
+    let (_, _, _, client) = setup(&env);
     let organizer = Address::generate(&env);
     let recipient = Address::generate(&env);
-    let event_id = ended_event_with_funds(&env, &client, &token_admin, &organizer);
+    let event_id = create_test_event(&env, &client, &organizer);
 
     let empty = String::from_str(&env, "");
     let too_long = String::from_bytes(&env, &[b'x'; (MAX_MEMO_LEN + 1) as usize]);
     let at_limit = String::from_bytes(&env, &[b'x'; MAX_MEMO_LEN as usize]);
 
-    for memo in [empty, too_long] {
+    for purpose in [empty, too_long] {
         assert_eq!(
             client
-                .try_release_funds(&organizer, &event_id, &recipient, &1_i128, &memo)
+                .try_add_budget_line(&organizer, &event_id, &recipient, &1_i128, &purpose)
                 .err(),
             Some(Ok(Error::InvalidMemo))
         );
     }
     assert_eq!(
-        client.release_funds(&organizer, &event_id, &recipient, &1_i128, &at_limit),
+        client.add_budget_line(&organizer, &event_id, &recipient, &1_i128, &at_limit),
         0
     );
 }
@@ -2191,14 +2224,8 @@ fn test_attach_receipt_records_hash_and_uri_and_publishes_event() {
     let (_, token_admin, contract_id, client) = setup(&env);
     let organizer = Address::generate(&env);
     let crew = Address::generate(&env);
-    let event_id = ended_event_with_funds(&env, &client, &token_admin, &organizer);
-    let payout_id = client.release_funds(
-        &organizer,
-        &event_id,
-        &crew,
-        &250_000_000_i128,
-        &String::from_str(&env, "Sound crew"),
-    );
+    let event_id = ended_event_with_funds(&env, &client, &token_admin, &organizer, &crew);
+    let payout_id = client.release_funds(&organizer, &event_id, &0, &250_000_000_i128);
 
     let hash = BytesN::from_array(&env, &[7u8; 32]);
     let uri = String::from_str(&env, "ipfs://bafy-receipt");
@@ -2227,14 +2254,8 @@ fn test_attach_receipt_without_uri_leaves_it_none() {
     let (_, token_admin, _, client) = setup(&env);
     let organizer = Address::generate(&env);
     let crew = Address::generate(&env);
-    let event_id = ended_event_with_funds(&env, &client, &token_admin, &organizer);
-    let payout_id = client.release_funds(
-        &organizer,
-        &event_id,
-        &crew,
-        &250_000_000_i128,
-        &String::from_str(&env, "Sound crew"),
-    );
+    let event_id = ended_event_with_funds(&env, &client, &token_admin, &organizer, &crew);
+    let payout_id = client.release_funds(&organizer, &event_id, &0, &250_000_000_i128);
 
     client.attach_receipt(
         &organizer,
@@ -2255,14 +2276,8 @@ fn test_attach_receipt_twice_fails() {
     let (_, token_admin, _, client) = setup(&env);
     let organizer = Address::generate(&env);
     let crew = Address::generate(&env);
-    let event_id = ended_event_with_funds(&env, &client, &token_admin, &organizer);
-    let payout_id = client.release_funds(
-        &organizer,
-        &event_id,
-        &crew,
-        &250_000_000_i128,
-        &String::from_str(&env, "Sound crew"),
-    );
+    let event_id = ended_event_with_funds(&env, &client, &token_admin, &organizer, &crew);
+    let payout_id = client.release_funds(&organizer, &event_id, &0, &250_000_000_i128);
 
     client.attach_receipt(
         &organizer,
@@ -2296,14 +2311,8 @@ fn test_attach_receipt_by_non_organizer_fails() {
     let organizer = Address::generate(&env);
     let impostor = Address::generate(&env);
     let crew = Address::generate(&env);
-    let event_id = ended_event_with_funds(&env, &client, &token_admin, &organizer);
-    let payout_id = client.release_funds(
-        &organizer,
-        &event_id,
-        &crew,
-        &250_000_000_i128,
-        &String::from_str(&env, "Sound crew"),
-    );
+    let event_id = ended_event_with_funds(&env, &client, &token_admin, &organizer, &crew);
+    let payout_id = client.release_funds(&organizer, &event_id, &0, &250_000_000_i128);
 
     let result = client.try_attach_receipt(
         &impostor,
@@ -2322,7 +2331,13 @@ fn test_attach_receipt_on_missing_payout_fails() {
 
     let (_, token_admin, _, client) = setup(&env);
     let organizer = Address::generate(&env);
-    let event_id = ended_event_with_funds(&env, &client, &token_admin, &organizer);
+    let event_id = ended_event_with_funds(
+        &env,
+        &client,
+        &token_admin,
+        &organizer,
+        &Address::generate(&env),
+    );
 
     let result = client.try_attach_receipt(
         &organizer,
@@ -2342,14 +2357,8 @@ fn test_attach_receipt_with_uri_too_long_fails() {
     let (_, token_admin, _, client) = setup(&env);
     let organizer = Address::generate(&env);
     let crew = Address::generate(&env);
-    let event_id = ended_event_with_funds(&env, &client, &token_admin, &organizer);
-    let payout_id = client.release_funds(
-        &organizer,
-        &event_id,
-        &crew,
-        &250_000_000_i128,
-        &String::from_str(&env, "Sound crew"),
-    );
+    let event_id = ended_event_with_funds(&env, &client, &token_admin, &organizer, &crew);
+    let payout_id = client.release_funds(&organizer, &event_id, &0, &250_000_000_i128);
 
     let too_long = String::from_bytes(&env, &[b'x'; (MAX_RECEIPT_URI_LEN + 1) as usize]);
     let result = client.try_attach_receipt(
@@ -2390,14 +2399,14 @@ fn test_organizer_stats_match_a_mixed_lifecycle_of_ended_and_cancelled_events() 
     let organizer = Address::generate(&env);
 
     // Event A: ended, with a partial payout released from escrow.
-    let event_a = ended_event_with_funds(&env, &client, &token_admin, &organizer);
-    client.release_funds(
+    let event_a = ended_event_with_funds(
+        &env,
+        &client,
+        &token_admin,
         &organizer,
-        &event_a,
         &Address::generate(&env),
-        &400_000_000_i128,
-        &String::from_str(&env, "Venue hire"),
     );
+    client.release_funds(&organizer, &event_a, &0, &400_000_000_i128);
 
     // Event B: cancelled, with both the sponsor and the ticket holder refunded.
     let sponsor_b = Address::generate(&env);
@@ -2635,5 +2644,321 @@ fn test_expire_nonexistent_event_fails() {
     assert_eq!(
         client.try_expire_event(&99).err(),
         Some(Ok(Error::EventNotFound))
+    );
+}
+
+// ─── Budget lines ─────────────────────────────────────────────────────────────
+
+#[test]
+fn test_add_budget_line_publishes_event_and_is_readable() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, contract_id, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let crew = Address::generate(&env);
+    let event_id = create_test_event(&env, &client, &organizer);
+
+    let line_id = client.add_budget_line(
+        &organizer,
+        &event_id,
+        &crew,
+        &250_000_000_i128,
+        &String::from_str(&env, "Sound crew"),
+    );
+    let events = env.events().all().filter_by_contract(&contract_id);
+
+    assert_eq!(line_id, 0);
+    assert_eq!(client.budget_line_count(&event_id), 1);
+
+    let line = client.get_budget_line(&event_id, &line_id);
+    assert_eq!(line.recipient, crew);
+    assert_eq!(line.amount, 250_000_000);
+    assert_eq!(line.purpose, String::from_str(&env, "Sound crew"));
+    assert_eq!(line.released, 0);
+
+    assert_eq!(
+        events,
+        [BudgetLineAdded {
+            event_id,
+            line_id,
+            recipient: crew,
+            amount: 250_000_000,
+            purpose: String::from_str(&env, "Sound crew"),
+        }
+        .to_xdr(&env, &contract_id)]
+    );
+}
+
+#[test]
+fn test_add_budget_line_locked_after_first_sponsorship() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let sponsor = Address::generate(&env);
+    let crew = Address::generate(&env);
+    token_admin.mint(&sponsor, &10_000_000_i128);
+    let event_id = create_test_event(&env, &client, &organizer);
+
+    client.sponsor_event(&sponsor, &event_id, &10_000_000_i128);
+
+    let result = client.try_add_budget_line(
+        &organizer,
+        &event_id,
+        &crew,
+        &1_i128,
+        &String::from_str(&env, "Too late"),
+    );
+    assert_eq!(result.err(), Some(Ok(Error::BudgetLocked)));
+}
+
+#[test]
+fn test_add_budget_line_locked_after_first_ticket_sale() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let crew = Address::generate(&env);
+    token_admin.mint(&buyer, &10_000_000_i128);
+    let event_id = create_test_event(&env, &client, &organizer);
+
+    client.buy_ticket(&buyer, &event_id, &0);
+
+    let result = client.try_add_budget_line(
+        &organizer,
+        &event_id,
+        &crew,
+        &1_i128,
+        &String::from_str(&env, "Too late"),
+    );
+    assert_eq!(result.err(), Some(Ok(Error::BudgetLocked)));
+}
+
+#[test]
+fn test_add_budget_line_by_non_organizer_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let impostor = Address::generate(&env);
+    let event_id = create_test_event(&env, &client, &organizer);
+
+    let result = client.try_add_budget_line(
+        &impostor,
+        &event_id,
+        &impostor,
+        &1_i128,
+        &String::from_str(&env, "Mine now"),
+    );
+    assert_eq!(result.err(), Some(Ok(Error::NotOrganizer)));
+}
+
+#[test]
+fn test_add_budget_line_on_inactive_event_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let event_id = create_test_event(&env, &client, &organizer);
+    client.cancel_event(&organizer, &event_id);
+
+    let result = client.try_add_budget_line(
+        &organizer,
+        &event_id,
+        &recipient,
+        &1_i128,
+        &String::from_str(&env, "Too late"),
+    );
+    assert_eq!(result.err(), Some(Ok(Error::EventNotActive)));
+}
+
+#[test]
+fn test_add_budget_line_with_non_positive_amount_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let event_id = create_test_event(&env, &client, &organizer);
+
+    for amount in [0_i128, -5_i128] {
+        assert_eq!(
+            client
+                .try_add_budget_line(
+                    &organizer,
+                    &event_id,
+                    &recipient,
+                    &amount,
+                    &String::from_str(&env, "Nothing")
+                )
+                .err(),
+            Some(Ok(Error::InvalidAmount))
+        );
+    }
+}
+
+#[test]
+fn test_release_funds_against_missing_line_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    // No add_budget_line call at all — the event has zero lines.
+    let event_id = ended_event_with_funds_without_budget(&env, &client, &token_admin, &organizer);
+
+    let result = client.try_release_funds(&organizer, &event_id, &0, &1_i128);
+    assert_eq!(result.err(), Some(Ok(Error::BudgetLineNotFound)));
+}
+
+#[test]
+fn test_release_funds_exceeding_line_budget_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let sponsor = Address::generate(&env);
+    let crew = Address::generate(&env);
+    token_admin.mint(&sponsor, &600_000_000_i128);
+    let event_id = create_test_event(&env, &client, &organizer);
+    client.add_budget_line(
+        &organizer,
+        &event_id,
+        &crew,
+        &200_000_000_i128,
+        &String::from_str(&env, "Sound crew"),
+    );
+    client.sponsor_event(&sponsor, &event_id, &600_000_000_i128);
+    client.end_event(&organizer, &event_id);
+
+    // The event's escrow can cover it, but the line's own budget can't.
+    let result = client.try_release_funds(&organizer, &event_id, &0, &200_000_001_i128);
+    assert_eq!(result.err(), Some(Ok(Error::BudgetLineExceeded)));
+}
+
+#[test]
+fn test_release_funds_allows_partial_releases_across_several_calls() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (token_addr, token_admin, _, client) = setup(&env);
+    let token = TokenClient::new(&env, &token_addr);
+    let organizer = Address::generate(&env);
+    let sponsor = Address::generate(&env);
+    let crew = Address::generate(&env);
+    token_admin.mint(&sponsor, &600_000_000_i128);
+    let event_id = create_test_event(&env, &client, &organizer);
+    client.add_budget_line(
+        &organizer,
+        &event_id,
+        &crew,
+        &300_000_000_i128,
+        &String::from_str(&env, "Sound crew"),
+    );
+    client.sponsor_event(&sponsor, &event_id, &600_000_000_i128);
+    client.end_event(&organizer, &event_id);
+
+    client.release_funds(&organizer, &event_id, &0, &100_000_000_i128);
+    client.release_funds(&organizer, &event_id, &0, &150_000_000_i128);
+    assert_eq!(client.get_budget_line(&event_id, &0).released, 250_000_000);
+    assert_eq!(token.balance(&crew), 250_000_000);
+
+    // 250m already released; 50m more exactly exhausts the 300m line...
+    client.release_funds(&organizer, &event_id, &0, &50_000_000_i128);
+    assert_eq!(client.get_budget_line(&event_id, &0).released, 300_000_000);
+
+    // ...and the line has nothing left for a fourth call.
+    let result = client.try_release_funds(&organizer, &event_id, &0, &1_i128);
+    assert_eq!(result.err(), Some(Ok(Error::BudgetLineExceeded)));
+}
+
+#[test]
+fn test_budget_line_queries_on_nonexistent_event_fail() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, client) = setup(&env);
+
+    assert_eq!(
+        client.try_get_budget_line(&99, &0).err(),
+        Some(Ok(Error::EventNotFound))
+    );
+    assert_eq!(
+        client.try_budget_line_count(&99).err(),
+        Some(Ok(Error::EventNotFound))
+    );
+}
+
+#[test]
+fn test_get_budget_line_missing_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let event_id = create_test_event(&env, &client, &organizer);
+
+    assert_eq!(
+        client.try_get_budget_line(&event_id, &0).err(),
+        Some(Ok(Error::BudgetLineNotFound))
+    );
+}
+
+#[test]
+fn test_budget_lines_full_lifecycle_with_two_recipients() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (token_addr, token_admin, _, client) = setup(&env);
+    let token = TokenClient::new(&env, &token_addr);
+    let organizer = Address::generate(&env);
+    let sponsor = Address::generate(&env);
+    let venue = Address::generate(&env);
+    let caterer = Address::generate(&env);
+    token_admin.mint(&sponsor, &600_000_000_i128);
+    let event_id = create_test_event(&env, &client, &organizer);
+
+    let venue_line = client.add_budget_line(
+        &organizer,
+        &event_id,
+        &venue,
+        &400_000_000_i128,
+        &String::from_str(&env, "Venue hire"),
+    );
+    let caterer_line = client.add_budget_line(
+        &organizer,
+        &event_id,
+        &caterer,
+        &200_000_000_i128,
+        &String::from_str(&env, "Catering"),
+    );
+    assert_eq!(client.budget_line_count(&event_id), 2);
+
+    client.sponsor_event(&sponsor, &event_id, &600_000_000_i128);
+    client.end_event(&organizer, &event_id);
+
+    client.release_funds(&organizer, &event_id, &venue_line, &400_000_000_i128);
+    client.release_funds(&organizer, &event_id, &caterer_line, &200_000_000_i128);
+
+    assert_eq!(token.balance(&venue), 400_000_000);
+    assert_eq!(token.balance(&caterer), 200_000_000);
+    assert_eq!(client.get_balance(&event_id), 0);
+    assert_eq!(client.total_released(&event_id), 600_000_000);
+    assert_eq!(
+        client.get_budget_line(&event_id, &venue_line).released,
+        400_000_000
+    );
+    assert_eq!(
+        client.get_budget_line(&event_id, &caterer_line).released,
+        200_000_000
     );
 }

@@ -15,10 +15,10 @@ Most community events — meetups, hackathons, campus and church events — run 
 
 ## How Inowo works
 
-1. **Create** — An organizer creates an event with a funding goal, a funding deadline, and one or more ticket tiers.
-2. **Fund** — Sponsors contribute USDC. Every contribution is recorded on-chain against the sponsor's address. Ticket sales flow into the same escrow.
+1. **Create** — An organizer creates an event with a funding goal and a funding deadline, then publishes a **budget**: who gets paid, how much, and for what — before anyone has paid in.
+2. **Fund** — Sponsors contribute USDC, seeing the budget first. Every contribution is recorded on-chain against the sponsor's address. Ticket sales flow into the same escrow.
 3. **Hold** — Funds sit in the contract, not in the organizer's wallet.
-4. **Release** — After the event ends, the organizer releases funds to named recipients — workers, vendors, the venue. Each payout carries a memo saying what it pays for and sits on the same ledger as every contribution.
+4. **Release** — After the event ends, the organizer releases funds against a budget line — never more than that line's amount, never to anyone the budget didn't name. Each payout sits on the same ledger as every contribution.
 5. **Refund** — If the event is cancelled — by the organizer, or by anyone once the funding deadline passes with the goal unmet — every sponsor and ticket holder can claim their money back from the contract in full.
 
 Over time, every event an organizer completes becomes a public track record: funds raised, funds released, refunds paid. That record is the organizer's reason to use Inowo — it's what earns sponsor trust for the next event.
@@ -47,7 +47,8 @@ Inowo is in early development on Stellar testnet. Here is exactly what exists to
 | Cancel and refund | Organizer cancels an active event; each ticket holder and sponsor claims a full refund from escrow |
 | Escrow | All USDC is held by the contract, tracked per event |
 | Contract events | Every state change is published as an on-chain event for indexers |
-| Release funds | After an event ends, the organizer pays recipients from escrow; each payout is a public record with a memo |
+| Budget lines | Organizer publishes planned spending (recipient, amount, purpose) before anyone funds the event; `release_funds` can only pay against a line, never more than it budgeted — every event needs at least one line before it can release anything |
+| Release funds | After an event ends, the organizer releases funds against a budget line; each payout is a public record with the line's purpose as its memo |
 | Proof of spend | Organizer attaches a SHA-256 receipt hash (and optional URI) to a payout, once, as evidence of what it paid for |
 | Read access | Anyone can query events, tiers, tickets, sponsorships, sponsor totals, balances, and payouts |
 | TypeScript bindings | A generated, typed client in [`bindings/`](./bindings) — every argument, return type, and error code matches the contract, regenerated with `scripts/generate-bindings.sh` |
@@ -56,9 +57,7 @@ Inowo is in early development on Stellar testnet. Here is exactly what exists to
 
 ### Planned — open for contribution
 
-| Feature | Difficulty | Issue |
-|---------|------------|-------|
-| Budget lines — organizer publishes planned spending per recipient before funding opens; releases are restricted to it | Hard | [#32](https://github.com/inowo-labs/inowo-Contract/issues/32) |
+Nothing right now — check the [Issues](https://github.com/inowo-labs/inowo-Contract/issues) tab for what's next.
 
 ## Project structure
 
@@ -76,7 +75,7 @@ All writes — creating events, sponsoring, buying tickets — are signed by the
 
 | Role | Can do today | Planned |
 |------|--------------|---------|
-| Organizer | Create events, define tiers, check in tickets, end or cancel events, release funds to recipients | Publish budget lines before funding opens |
+| Organizer | Create events, define tiers, publish a budget, check in tickets, end or cancel events, release funds against a budget line | — |
 | Sponsor | Contribute USDC; view every sponsorship for an event; claim a full refund if the event is cancelled or expires unfunded | — |
 | Attendee | Buy tickets; prove ownership on-chain; claim a refund if the event is cancelled; transfer an unused ticket to someone else | — |
 | Recipient | Receive payouts from an event's escrow, each with a public memo, and have the organizer attach proof of spend | — |
@@ -88,6 +87,7 @@ All writes — creating events, sponsoring, buying tickets — are signed by the
 - **Ticket tier** — a named price level (e.g. General, VIP) with a price and supply cap.
 - **Ticket** — an ownership record linking a buyer's address to an event and tier, with the price paid and redeemed / refunded flags.
 - **Sponsorship** — a contribution recorded against the sponsor's address.
+- **BudgetLine** — a planned disbursement: recipient, amount, purpose, and how much of it has been released so far.
 - **Payout** — a release from escrow: recipient, amount, memo, timestamp, and an optional receipt hash + URI once the organizer attaches proof of spend.
 - **OrganizerStats** — per organizer: events created/ended/cancelled, and total USDC raised/released/refunded across every event they've run.
 
@@ -185,7 +185,8 @@ Never hand-edit `bindings/src/index.ts`; CI regenerates it and fails if the comm
 | `expire_event` | `event_id: u32` | — | Callable by anyone, no auth required: cancels an `Active` event once its `funding_deadline` has passed with the goal unmet, opening refunds the same as `cancel_event` |
 | `refund_ticket` | `owner: Address, event_id: u32, ticket_id: u32` | `i128` (amount) | Ticket owner claims back the price paid for a ticket to a cancelled event |
 | `refund_sponsorship` | `sponsor: Address, event_id: u32` | `i128` (amount) | Sponsor claims back their total contribution to a cancelled event |
-| `release_funds` | `organizer: Address, event_id: u32, recipient: Address, amount: i128, memo: String` | `u32` (payout ID) | After an event ends, pays a recipient from escrow; `memo` (1–200 bytes) says what the payout is for |
+| `add_budget_line` | `organizer: Address, event_id: u32, recipient: Address, amount: i128, purpose: String` | `u32` (line ID) | Publishes a planned disbursement; only while `Active` and before the event's first sponsorship or ticket sale |
+| `release_funds` | `organizer: Address, event_id: u32, line_id: u32, amount: i128` | `u32` (payout ID) | After an event ends, pays the line's recipient from escrow; never more than the line's remaining amount. Memo is the line's purpose |
 | `attach_receipt` | `organizer: Address, event_id: u32, payout_id: u32, receipt_hash: BytesN<32>, receipt_uri: Option<String>` | — | Attaches a SHA-256 receipt hash (and optionally where to find the document, e.g. an IPFS CID, up to 200 bytes) to a payout as proof of spend; settable only once per payout |
 
 ### Read functions
@@ -203,6 +204,8 @@ Never hand-edit `bindings/src/index.ts`; CI regenerates it and fails if the comm
 | `get_organizer` | `event_id: u32` | `Address` | The event's organizer |
 | `get_payout` | `event_id: u32, payout_id: u32` | `Payout` | A single payout record, including its receipt hash and URI if one has been attached |
 | `payout_count` | `event_id: u32` | `u32` | Payouts released for an event |
+| `get_budget_line` | `event_id: u32, line_id: u32` | `BudgetLine` | A single budget line, including how much has been released against it |
+| `budget_line_count` | `event_id: u32` | `u32` | Budget lines published for an event |
 | `total_released` | `event_id: u32` | `i128` | Total USDC released from an event's escrow |
 | `get_token` | — | `Address` | The configured USDC token address |
 | `event_count` | — | `u32` | Total events created |
@@ -228,7 +231,8 @@ Every state change publishes a contract event, so indexers can follow an event's
 | `event_expired` | `event_id` | `balance` | `expire_event` |
 | `ticket_refunded` | `event_id`, `owner` | `ticket_id`, `amount` | `refund_ticket` |
 | `sponsorship_refunded` | `event_id`, `sponsor` | `amount` | `refund_sponsorship` |
-| `funds_released` | `event_id`, `recipient` | `payout_id`, `amount`, `memo` | `release_funds` |
+| `funds_released` | `event_id`, `recipient` | `payout_id`, `line_id`, `amount`, `memo` | `release_funds` |
+| `budget_line_added` | `event_id` | `line_id`, `recipient`, `amount`, `purpose` | `add_budget_line` |
 | `receipt_attached` | `event_id` | `payout_id`, `receipt_hash` | `attach_receipt` |
 
 ### Storage lifetime
@@ -279,6 +283,9 @@ Every function that can fail returns a typed error. On-chain, clients receive it
 | 26 | `InvalidFundingDeadline` | The funding deadline isn't in the future, or is after the event date |
 | 27 | `FundingDeadlineNotPassed` | `expire_event` was called before the funding deadline passed |
 | 28 | `FundingGoalReached` | `expire_event` was called on an event that already met its funding goal |
+| 29 | `BudgetLocked` | `add_budget_line` was called after the event's first sponsorship or ticket sale |
+| 30 | `BudgetLineNotFound` | No budget line exists with the given ID for the event |
+| 31 | `BudgetLineExceeded` | The release would push the line's total past its budgeted amount |
 
 ## Contributing
 

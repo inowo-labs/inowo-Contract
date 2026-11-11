@@ -294,6 +294,18 @@ impl Harness<'_> {
                     &1_800_000_000_u64,
                     &tiers,
                 );
+                // One budget line, generous enough to never itself block a
+                // release this model would otherwise expect to succeed, so
+                // Release's existing organizer/status/amount logic still
+                // governs recipients[0]. recipients[1] has no line, so any
+                // Release aimed at it must now always fail.
+                self.client.add_budget_line(
+                    &self.users[organizer],
+                    &id,
+                    &self.recipients[0],
+                    &1_000_000_000_000_i128,
+                    &String::from_str(&self.env, "Generated budget"),
+                );
                 assert_eq!(id as usize, self.model.events.len());
                 self.model.events.push(ModelEvent {
                     organizer,
@@ -427,22 +439,19 @@ impl Harness<'_> {
                 amount,
             } => {
                 let caller = self.resolve(caller, event);
-                let expect = self.event(event).is_some_and(|e| {
-                    let balance = e.sponsored + e.sales - e.released - e.refunded;
-                    e.organizer == caller
-                        && e.status == Status::Ended
-                        && amount > 0
-                        && amount <= balance
-                });
+                // Only recipients[0] (line 0) has a budget line; any other
+                // recipient index has no line to release against.
+                let expect = recipient == 0
+                    && self.event(event).is_some_and(|e| {
+                        let balance = e.sponsored + e.sales - e.released - e.refunded;
+                        e.organizer == caller
+                            && e.status == Status::Ended
+                            && amount > 0
+                            && amount <= balance
+                    });
                 let ok = self
                     .client
-                    .try_release_funds(
-                        &self.users[caller],
-                        &event,
-                        &self.recipients[recipient],
-                        &amount,
-                        &String::from_str(&self.env, "Generated payout"),
-                    )
+                    .try_release_funds(&self.users[caller], &event, &(recipient as u32), &amount)
                     .is_ok();
                 assert_eq!(ok, expect, "release {op:?}");
                 if ok {
