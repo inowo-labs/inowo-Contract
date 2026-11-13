@@ -75,7 +75,7 @@ There is **no admin, owner, pause switch, or upgrade function.** Nobody — incl
 | `SponsorTotal(id, sponsor)` | persistent | what each sponsor is owed if the event is cancelled |
 | `OwnerTicketCount(id, owner)`, `OwnerTicket(id, owner, n)` | persistent | every ticket an address has ever bought or received by transfer for an event — a history, not a live "currently owned" list |
 | `BudgetLineCount(id)`, `BudgetLine(id, n)` | persistent | one entry per planned disbursement: recipient, amount, purpose, how much has been released against it |
-| `PayoutCounter(id)`, `Payout(id, n)`, `TotalReleased(id)` | persistent | one entry per payout: recipient, amount, memo, ledger time, receipt hash + URI (once attached) |
+| `PayoutCounter(id)`, `Payout(id, n)`, `TotalReleased(id)` | persistent | one entry per payout: recipient, amount, `line_id`, memo, ledger time, receipt hash + URI (once attached) |
 | `OrganizerStats(organizer)` | persistent | events created/ended/cancelled, total raised/released/refunded |
 | `OrganizerEventCount(organizer)`, `OrganizerEvent(organizer, n)` | persistent | one entry per event an organizer has ever created |
 

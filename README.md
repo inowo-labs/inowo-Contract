@@ -88,7 +88,7 @@ All writes — creating events, sponsoring, buying tickets — are signed by the
 - **Ticket** — an ownership record linking a buyer's address to an event and tier, with the price paid and redeemed / refunded flags.
 - **Sponsorship** — a contribution recorded against the sponsor's address.
 - **BudgetLine** — a planned disbursement: recipient, amount, purpose, and how much of it has been released so far.
-- **Payout** — a release from escrow: recipient, amount, memo, timestamp, and an optional receipt hash + URI once the organizer attaches proof of spend.
+- **Payout** — a release from escrow: recipient, amount, the budget line it was released against, memo, timestamp, and an optional receipt hash + URI once the organizer attaches proof of spend.
 - **OrganizerStats** — per organizer: events created/ended/cancelled, and total USDC raised/released/refunded across every event they've run.
 
 All amounts are in USDC stroops: `1 USDC = 10_000_000`.
@@ -202,7 +202,7 @@ Never hand-edit `bindings/src/index.ts`; CI regenerates it and fails if the comm
 | `get_sponsor_total` | `event_id: u32, sponsor: Address` | `i128` | A sponsor's total contribution not yet refunded |
 | `get_balance` | `event_id: u32` | `i128` | USDC held in escrow for an event |
 | `get_organizer` | `event_id: u32` | `Address` | The event's organizer |
-| `get_payout` | `event_id: u32, payout_id: u32` | `Payout` | A single payout record, including its receipt hash and URI if one has been attached |
+| `get_payout` | `event_id: u32, payout_id: u32` | `Payout` | A single payout record, including which budget line it was released against and its receipt hash/URI if one has been attached |
 | `payout_count` | `event_id: u32` | `u32` | Payouts released for an event |
 | `get_budget_line` | `event_id: u32, line_id: u32` | `BudgetLine` | A single budget line, including how much has been released against it |
 | `budget_line_count` | `event_id: u32` | `u32` | Budget lines published for an event |

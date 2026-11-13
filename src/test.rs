@@ -1363,6 +1363,7 @@ fn test_release_funds_pays_recipient_and_records_payout() {
     let payout = client.get_payout(&event_id, &payout_id);
     assert_eq!(payout.recipient, crew);
     assert_eq!(payout.amount, 250_000_000);
+    assert_eq!(payout.line_id, 0);
     assert_eq!(payout.memo, memo);
 
     assert_eq!(
@@ -2946,8 +2947,20 @@ fn test_budget_lines_full_lifecycle_with_two_recipients() {
     client.sponsor_event(&sponsor, &event_id, &600_000_000_i128);
     client.end_event(&organizer, &event_id);
 
-    client.release_funds(&organizer, &event_id, &venue_line, &400_000_000_i128);
-    client.release_funds(&organizer, &event_id, &caterer_line, &200_000_000_i128);
+    let venue_payout = client.release_funds(&organizer, &event_id, &venue_line, &400_000_000_i128);
+    let caterer_payout =
+        client.release_funds(&organizer, &event_id, &caterer_line, &200_000_000_i128);
+
+    // Each payout remembers which line authorized it — not just the event
+    // published when it happened.
+    assert_eq!(
+        client.get_payout(&event_id, &venue_payout).line_id,
+        venue_line
+    );
+    assert_eq!(
+        client.get_payout(&event_id, &caterer_payout).line_id,
+        caterer_line
+    );
 
     assert_eq!(token.balance(&venue), 400_000_000);
     assert_eq!(token.balance(&caterer), 200_000_000);
