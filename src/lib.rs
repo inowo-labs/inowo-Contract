@@ -82,6 +82,10 @@ pub struct Sponsorship {
 pub struct Payout {
     pub recipient: Address,
     pub amount: i128,
+    /// Which budget line authorized this payout. Stored directly rather
+    /// than left to only the `funds_released` event, so a client reading
+    /// payouts can always see what budgeted it without an indexer.
+    pub line_id: u32,
     /// What the payout is for, e.g. "Sound crew" — required so every
     /// disbursement explains itself next to the contributions it spends.
     pub memo: String,
@@ -1085,6 +1089,7 @@ impl InowoContract {
             &Payout {
                 recipient: line.recipient.clone(),
                 amount,
+                line_id,
                 memo: line.purpose.clone(),
                 timestamp: env.ledger().timestamp(),
                 receipt_hash: None,
