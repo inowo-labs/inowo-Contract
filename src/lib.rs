@@ -172,6 +172,9 @@ pub enum Error {
     BudgetLineNotFound = 30,
     /// The release would push this line's total past its budgeted amount.
     BudgetLineExceeded = 31,
+    /// This budget line would push the event's total published budget past
+    /// its funding goal — a budget sponsors can never fully fund.
+    BudgetExceedsGoal = 32,
 }
 
 // ─── Contract events ──────────────────────────────────────────────────────────
@@ -348,6 +351,10 @@ pub enum DataKey {
     /// One entry per budget line so the budget can grow without hitting
     /// entry size limits. See `get_budget_line`.
     BudgetLine(u32, u32),
+    /// Running sum of every budget line's `amount`, checked against the
+    /// event's `funding_goal` on `add_budget_line` so the published budget
+    /// can never promise more than the event could ever fully fund.
+    BudgetedTotal(u32),
 }
 
 /// Upper bound on a payout memo, in bytes, to keep payout entries small.
@@ -491,6 +498,13 @@ fn load_total_released(env: &Env, event_id: u32) -> i128 {
     env.storage()
         .persistent()
         .get(&DataKey::TotalReleased(event_id))
+        .unwrap_or(0)
+}
+
+fn load_budgeted_total(env: &Env, event_id: u32) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::BudgetedTotal(event_id))
         .unwrap_or(0)
 }
 
@@ -990,7 +1004,9 @@ impl InowoContract {
     /// much, and for what — before anyone has funded the event. Only
     /// allowed while `Active` and before the first sponsorship or ticket
     /// sale, so the budget a sponsor sees before paying can't change
-    /// afterward. Returns the line ID.
+    /// afterward. The running total of every published line can never pass
+    /// the event's funding goal, so the budget sponsors see is always one
+    /// the event could fully fund. Returns the line ID.
     pub fn add_budget_line(
         env: Env,
         organizer: Address,
@@ -1017,6 +1033,10 @@ impl InowoContract {
         if purpose.is_empty() || purpose.len() > MAX_MEMO_LEN {
             return Err(Error::InvalidMemo);
         }
+        let budgeted = load_budgeted_total(&env, event_id);
+        if budgeted + amount > event.funding_goal {
+            return Err(Error::BudgetExceedsGoal);
+        }
 
         let line_id = load_u32(&env, &DataKey::BudgetLineCount(event_id));
         save(&env, &DataKey::BudgetLineCount(event_id), &(line_id + 1));
@@ -1029,6 +1049,11 @@ impl InowoContract {
                 purpose: purpose.clone(),
                 released: 0,
             },
+        );
+        save(
+            &env,
+            &DataKey::BudgetedTotal(event_id),
+            &(budgeted + amount),
         );
 
         BudgetLineAdded {
