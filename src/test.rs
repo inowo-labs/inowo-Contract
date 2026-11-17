@@ -1307,7 +1307,19 @@ fn ended_event_with_funds(
     token_admin.mint(&sponsor, &600_000_000_i128);
     token_admin.mint(&buyer, &10_000_000_i128);
 
-    let event_id = create_test_event(env, client, organizer);
+    // A funding goal of 610_000_000, not create_test_event's 500_000_000, so
+    // a budget line covering the full 610_000_000 this raises stays within
+    // the goal a published budget can never exceed.
+    let event_id = client.create_event(
+        organizer,
+        &String::from_str(env, "Stellar Summit"),
+        &String::from_str(env, "The biggest Stellar dev conference"),
+        &String::from_str(env, "San Francisco"),
+        &1_750_000_000_u64,
+        &610_000_000_i128,
+        &1_700_000_000_u64,
+        &default_tiers(env),
+    );
     client.add_budget_line(
         organizer,
         &event_id,
@@ -1395,7 +1407,19 @@ fn test_release_funds_can_pay_several_recipients_until_escrow_is_empty() {
     token_admin.mint(&sponsor, &600_000_000_i128);
     token_admin.mint(&buyer, &10_000_000_i128);
 
-    let event_id = create_test_event(&env, &client, &organizer);
+    // A funding goal of 610_000_000, not create_test_event's 500_000_000, so
+    // these two lines (summing to the full 610_000_000 raised) stay within
+    // the goal a published budget can never exceed.
+    let event_id = client.create_event(
+        &organizer,
+        &String::from_str(&env, "Stellar Summit"),
+        &String::from_str(&env, "The biggest Stellar dev conference"),
+        &String::from_str(&env, "San Francisco"),
+        &1_750_000_000_u64,
+        &610_000_000_i128,
+        &1_700_000_000_u64,
+        &default_tiers(&env),
+    );
     client.add_budget_line(
         &organizer,
         &event_id,
@@ -2925,14 +2949,16 @@ fn test_budget_lines_full_lifecycle_with_two_recipients() {
     let sponsor = Address::generate(&env);
     let venue = Address::generate(&env);
     let caterer = Address::generate(&env);
-    token_admin.mint(&sponsor, &600_000_000_i128);
+    token_admin.mint(&sponsor, &500_000_000_i128);
     let event_id = create_test_event(&env, &client, &organizer);
 
+    // Lines sum to exactly the event's funding goal (500_000_000) — the most
+    // a published budget can ever add up to.
     let venue_line = client.add_budget_line(
         &organizer,
         &event_id,
         &venue,
-        &400_000_000_i128,
+        &300_000_000_i128,
         &String::from_str(&env, "Venue hire"),
     );
     let caterer_line = client.add_budget_line(
@@ -2944,10 +2970,10 @@ fn test_budget_lines_full_lifecycle_with_two_recipients() {
     );
     assert_eq!(client.budget_line_count(&event_id), 2);
 
-    client.sponsor_event(&sponsor, &event_id, &600_000_000_i128);
+    client.sponsor_event(&sponsor, &event_id, &500_000_000_i128);
     client.end_event(&organizer, &event_id);
 
-    let venue_payout = client.release_funds(&organizer, &event_id, &venue_line, &400_000_000_i128);
+    let venue_payout = client.release_funds(&organizer, &event_id, &venue_line, &300_000_000_i128);
     let caterer_payout =
         client.release_funds(&organizer, &event_id, &caterer_line, &200_000_000_i128);
 
@@ -2962,16 +2988,78 @@ fn test_budget_lines_full_lifecycle_with_two_recipients() {
         caterer_line
     );
 
-    assert_eq!(token.balance(&venue), 400_000_000);
+    assert_eq!(token.balance(&venue), 300_000_000);
     assert_eq!(token.balance(&caterer), 200_000_000);
     assert_eq!(client.get_balance(&event_id), 0);
-    assert_eq!(client.total_released(&event_id), 600_000_000);
+    assert_eq!(client.total_released(&event_id), 500_000_000);
     assert_eq!(
         client.get_budget_line(&event_id, &venue_line).released,
-        400_000_000
+        300_000_000
     );
     assert_eq!(
         client.get_budget_line(&event_id, &caterer_line).released,
         200_000_000
     );
+}
+
+#[test]
+fn test_add_budget_line_exceeding_funding_goal_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    // create_test_event's funding goal is 500_000_000.
+    let event_id = create_test_event(&env, &client, &organizer);
+
+    let result = client.try_add_budget_line(
+        &organizer,
+        &event_id,
+        &recipient,
+        &500_000_001_i128,
+        &String::from_str(&env, "Everything"),
+    );
+    assert_eq!(result.err(), Some(Ok(Error::BudgetExceedsGoal)));
+}
+
+#[test]
+fn test_add_budget_line_running_total_cannot_exceed_funding_goal() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let venue = Address::generate(&env);
+    let caterer = Address::generate(&env);
+    // create_test_event's funding goal is 500_000_000.
+    let event_id = create_test_event(&env, &client, &organizer);
+
+    client.add_budget_line(
+        &organizer,
+        &event_id,
+        &venue,
+        &300_000_000_i128,
+        &String::from_str(&env, "Venue hire"),
+    );
+
+    // Individually under the goal, but pushes the running total to 600M.
+    let result = client.try_add_budget_line(
+        &organizer,
+        &event_id,
+        &caterer,
+        &200_000_001_i128,
+        &String::from_str(&env, "Catering"),
+    );
+    assert_eq!(result.err(), Some(Ok(Error::BudgetExceedsGoal)));
+
+    // Exactly up to the goal still succeeds.
+    client.add_budget_line(
+        &organizer,
+        &event_id,
+        &caterer,
+        &200_000_000_i128,
+        &String::from_str(&env, "Catering"),
+    );
+    assert_eq!(client.budget_line_count(&event_id), 2);
 }

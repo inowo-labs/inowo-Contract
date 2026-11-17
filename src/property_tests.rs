@@ -284,13 +284,16 @@ impl Harness<'_> {
                         supply_cap: TIERS[1].1,
                     },
                 ];
+                // funding_goal matches the budget line below: it only needs
+                // to be generous enough that neither ever itself blocks a
+                // release this model would otherwise expect to succeed.
                 let id = self.client.create_event(
                     &self.users[organizer],
                     &String::from_str(&self.env, "Generated event"),
                     &String::from_str(&self.env, "desc"),
                     &String::from_str(&self.env, "venue"),
                     &1_900_000_000,
-                    &1_000_000_000,
+                    &1_000_000_000_000,
                     &1_800_000_000_u64,
                     &tiers,
                 );
