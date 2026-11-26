@@ -3063,3 +3063,134 @@ fn test_add_budget_line_running_total_cannot_exceed_funding_goal() {
     );
     assert_eq!(client.budget_line_count(&event_id), 2);
 }
+
+#[test]
+fn test_remove_budget_line_frees_its_amount_against_the_funding_goal() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let venue = Address::generate(&env);
+    // create_test_event's funding goal is 500_000_000.
+    let event_id = create_test_event(&env, &client, &organizer);
+
+    let line_id = client.add_budget_line(
+        &organizer,
+        &event_id,
+        &venue,
+        &500_000_000_i128,
+        &String::from_str(&env, "Wrong amount"),
+    );
+
+    // The goal is fully budgeted, so a second line would fail...
+    let caterer = Address::generate(&env);
+    let blocked = client.try_add_budget_line(
+        &organizer,
+        &event_id,
+        &caterer,
+        &1_i128,
+        &String::from_str(&env, "Catering"),
+    );
+    assert_eq!(blocked.err(), Some(Ok(Error::BudgetExceedsGoal)));
+
+    // ...until the mistaken line is removed, freeing its amount back.
+    client.remove_budget_line(&organizer, &event_id, &line_id);
+
+    let removed = client.get_budget_line(&event_id, &line_id);
+    assert_eq!(removed.amount, 0);
+    assert_eq!(removed.released, 0);
+
+    let new_line_id = client.add_budget_line(
+        &organizer,
+        &event_id,
+        &caterer,
+        &500_000_000_i128,
+        &String::from_str(&env, "Catering"),
+    );
+    assert_ne!(new_line_id, line_id); // removed ids are never reused
+    assert_eq!(client.budget_line_count(&event_id), 2);
+}
+
+#[test]
+fn test_remove_budget_line_rejects_non_organizer() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let stranger = Address::generate(&env);
+    let venue = Address::generate(&env);
+    let event_id = create_test_event(&env, &client, &organizer);
+    let line_id = client.add_budget_line(
+        &organizer,
+        &event_id,
+        &venue,
+        &100_000_000_i128,
+        &String::from_str(&env, "Venue hire"),
+    );
+
+    let result = client.try_remove_budget_line(&stranger, &event_id, &line_id);
+    assert_eq!(result.err(), Some(Ok(Error::NotOrganizer)));
+}
+
+#[test]
+fn test_remove_budget_line_rejects_unknown_line() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let event_id = create_test_event(&env, &client, &organizer);
+
+    let result = client.try_remove_budget_line(&organizer, &event_id, &0);
+    assert_eq!(result.err(), Some(Ok(Error::BudgetLineNotFound)));
+}
+
+#[test]
+fn test_remove_budget_line_cannot_be_called_twice() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, client) = setup(&env);
+    let organizer = Address::generate(&env);
+    let venue = Address::generate(&env);
+    let event_id = create_test_event(&env, &client, &organizer);
+    let line_id = client.add_budget_line(
+        &organizer,
+        &event_id,
+        &venue,
+        &100_000_000_i128,
+        &String::from_str(&env, "Venue hire"),
+    );
+
+    client.remove_budget_line(&organizer, &event_id, &line_id);
+
+    let result = client.try_remove_budget_line(&organizer, &event_id, &line_id);
+    assert_eq!(result.err(), Some(Ok(Error::BudgetLineNotFound)));
+}
+
+#[test]
+fn test_remove_budget_line_rejects_once_budget_is_locked() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, token_admin, _, client) = setup(&env);
+    let sponsor = Address::generate(&env);
+    token_admin.mint(&sponsor, &10_000_000_i128);
+    let organizer = Address::generate(&env);
+    let venue = Address::generate(&env);
+    let event_id = create_test_event(&env, &client, &organizer);
+    let line_id = client.add_budget_line(
+        &organizer,
+        &event_id,
+        &venue,
+        &100_000_000_i128,
+        &String::from_str(&env, "Venue hire"),
+    );
+
+    client.sponsor_event(&sponsor, &event_id, &10_000_000_i128);
+
+    let result = client.try_remove_budget_line(&organizer, &event_id, &line_id);
+    assert_eq!(result.err(), Some(Ok(Error::BudgetLocked)));
+}

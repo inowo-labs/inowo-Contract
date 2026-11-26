@@ -310,6 +310,14 @@ pub struct BudgetLineAdded {
 
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BudgetLineRemoved {
+    #[topic]
+    pub event_id: u32,
+    pub line_id: u32,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReceiptAttached {
     #[topic]
     pub event_id: u32,
@@ -1065,6 +1073,55 @@ impl InowoContract {
         }
         .publish(&env);
         Ok(line_id)
+    }
+
+    /// Organizer removes a budget line they published by mistake, freeing
+    /// its amount back against the funding goal so a corrected line can
+    /// take its place. Allowed under exactly the same conditions as
+    /// `add_budget_line` — only while `Active` and before the first
+    /// sponsorship or ticket sale — so a line already visible to a sponsor
+    /// can never quietly disappear. The line's ID is never reused.
+    pub fn remove_budget_line(
+        env: Env,
+        organizer: Address,
+        event_id: u32,
+        line_id: u32,
+    ) -> Result<(), Error> {
+        organizer.require_auth();
+
+        let event = load_event(&env, event_id)?;
+        if event.organizer != organizer {
+            return Err(Error::NotOrganizer);
+        }
+        if event.status != EventStatus::Active {
+            return Err(Error::EventNotActive);
+        }
+        if event.balance > 0 {
+            return Err(Error::BudgetLocked);
+        }
+
+        let key = DataKey::BudgetLine(event_id, line_id);
+        let mut line: BudgetLine = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::BudgetLineNotFound)?;
+        if line.amount == 0 {
+            return Err(Error::BudgetLineNotFound);
+        }
+
+        let budgeted = load_budgeted_total(&env, event_id);
+        save(
+            &env,
+            &DataKey::BudgetedTotal(event_id),
+            &(budgeted - line.amount),
+        );
+
+        line.amount = 0;
+        save(&env, &key, &line);
+
+        BudgetLineRemoved { event_id, line_id }.publish(&env);
+        Ok(())
     }
 
     /// Organizer releases escrowed funds against a published budget line,
