@@ -47,7 +47,7 @@ Inowo is in early development on Stellar testnet. Here is exactly what exists to
 | Cancel and refund | Organizer cancels an active event; each ticket holder and sponsor claims a full refund from escrow |
 | Escrow | All USDC is held by the contract, tracked per event |
 | Contract events | Every state change is published as an on-chain event for indexers |
-| Budget lines | Organizer publishes planned spending (recipient, amount, purpose) before anyone funds the event, never summing to more than the funding goal; `release_funds` can only pay against a line, never more than it budgeted — every event needs at least one line before it can release anything |
+| Budget lines | Organizer publishes planned spending (recipient, amount, purpose) before anyone funds the event, never summing to more than the funding goal, and can remove a mistaken line before that same point; `release_funds` can only pay against a line, never more than it budgeted — every event needs at least one line before it can release anything |
 | Release funds | After an event ends, the organizer releases funds against a budget line; each payout is a public record with the line's purpose as its memo |
 | Proof of spend | Organizer attaches a SHA-256 receipt hash (and optional URI) to a payout, once, as evidence of what it paid for |
 | Read access | Anyone can query events, tiers, tickets, sponsorships, sponsor totals, balances, and payouts |
@@ -186,6 +186,7 @@ Never hand-edit `bindings/src/index.ts`; CI regenerates it and fails if the comm
 | `refund_ticket` | `owner: Address, event_id: u32, ticket_id: u32` | `i128` (amount) | Ticket owner claims back the price paid for a ticket to a cancelled event |
 | `refund_sponsorship` | `sponsor: Address, event_id: u32` | `i128` (amount) | Sponsor claims back their total contribution to a cancelled event |
 | `add_budget_line` | `organizer: Address, event_id: u32, recipient: Address, amount: i128, purpose: String` | `u32` (line ID) | Publishes a planned disbursement; only while `Active` and before the event's first sponsorship or ticket sale; the running total of every line can never exceed the event's funding goal |
+| `remove_budget_line` | `organizer: Address, event_id: u32, line_id: u32` | — | Removes a mistakenly published line, under the same conditions as `add_budget_line`; frees its amount back against the funding goal. The line ID is never reused |
 | `release_funds` | `organizer: Address, event_id: u32, line_id: u32, amount: i128` | `u32` (payout ID) | After an event ends, pays the line's recipient from escrow; never more than the line's remaining amount. Memo is the line's purpose |
 | `attach_receipt` | `organizer: Address, event_id: u32, payout_id: u32, receipt_hash: BytesN<32>, receipt_uri: Option<String>` | — | Attaches a SHA-256 receipt hash (and optionally where to find the document, e.g. an IPFS CID, up to 200 bytes) to a payout as proof of spend; settable only once per payout |
 
@@ -233,6 +234,7 @@ Every state change publishes a contract event, so indexers can follow an event's
 | `sponsorship_refunded` | `event_id`, `sponsor` | `amount` | `refund_sponsorship` |
 | `funds_released` | `event_id`, `recipient` | `payout_id`, `line_id`, `amount`, `memo` | `release_funds` |
 | `budget_line_added` | `event_id` | `line_id`, `recipient`, `amount`, `purpose` | `add_budget_line` |
+| `budget_line_removed` | `event_id` | `line_id` | `remove_budget_line` |
 | `receipt_attached` | `event_id` | `payout_id`, `receipt_hash` | `attach_receipt` |
 
 ### Storage lifetime
